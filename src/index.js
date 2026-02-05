@@ -68,6 +68,23 @@ app.post("/api/debug/echo", (req, res) => {
   return res.json({ ok: true, headers: req.headers, body: req.body });
 });
 
+/** Debug routes: confirm which endpoints are really loaded */
+app.get("/api/debug/routes", (req, res) => {
+  try {
+    const routes = [];
+    const stack = app?._router?.stack || [];
+    for (const layer of stack) {
+      if (layer.route && layer.route.path) {
+        const methods = Object.keys(layer.route.methods || {}).map((m) => m.toUpperCase());
+        routes.push({ path: layer.route.path, methods });
+      }
+    }
+    return res.json({ ok: true, routes });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 /** Debug DB info (tables + counts) */
 app.get("/api/debug/db", (req, res) => {
   try {
@@ -112,7 +129,6 @@ function requireAdmin(req, res) {
   const got = String(req.headers["x-admin-token"] || "").trim();
 
   if (!expected) {
-    // If you forgot to set ADMIN_TOKEN on Render, show clear message
     res.status(500).json({ error: "ADMIN_TOKEN is not set on server (Render env var missing)" });
     return false;
   }
@@ -123,6 +139,84 @@ function requireAdmin(req, res) {
   return true;
 }
 
+/** ===== Method normalization (IMPORTANT) =====
+ * We accept both:
+ * - bitcoin / ethereum / solana / usdt_trc20 / usdt_erc20 / usdt_sol
+ * - BTC / ETH / SOL / USDT_TRC20 / USDT_ERC20 / USDT_SOL
+ */
+function normalizeMethod(input) {
+  const v = String(input || "").trim();
+  if (!v) return "";
+
+  const lower = v.toLowerCase();
+
+  // Already correct values:
+  if (
+    lower === METHOD.BTC ||
+    lower === METHOD.ETH ||
+    lower === METHOD.SOL ||
+    lower === METHOD.USDT_TRC20 ||
+    lower === METHOD.USDT_ERC20 ||
+    lower === METHOD.USDT_SOL
+  ) {
+    return lower;
+  }
+
+  // Aliases:
+  const map = {
+    btc: METHOD.BTC,
+    bitcoin: METHOD.BTC,
+
+    eth: METHOD.ETH,
+    ethereum: METHOD.ETH,
+
+    sol: METHOD.SOL,
+    solana: METHOD.SOL,
+
+    usdt_trc20: METHOD.USDT_TRC20,
+    "usdt(trc20)": METHOD.USDT_TRC20,
+    trc20: METHOD.USDT_TRC20,
+
+    usdt_erc20: METHOD.USDT_ERC20,
+    "usdt(erc20)": METHOD.USDT_ERC20,
+    erc20: METHOD.USDT_ERC20,
+
+    usdt_sol: METHOD.USDT_SOL,
+    "usdt(sol)": METHOD.USDT_SOL,
+  };
+
+  // Also support uppercase enums like "USDT_TRC20"
+  const upper = v.toUpperCase();
+  const mapUpper = {
+    BTC: METHOD.BTC,
+    ETH: METHOD.ETH,
+    SOL: METHOD.SOL,
+    USDT_TRC20: METHOD.USDT_TRC20,
+    USDT_ERC20: METHOD.USDT_ERC20,
+    USDT_SOL: METHOD.USDT_SOL,
+  };
+
+  if (mapUpper[upper]) return mapUpper[upper];
+  if (map[lower]) return map[lower];
+
+  return "";
+}
+
+const MethodSchema = z
+  .preprocess((v) => normalizeMethod(v), z.string())
+  .refine(
+    (v) =>
+      v === METHOD.BTC ||
+      v === METHOD.ETH ||
+      v === METHOD.SOL ||
+      v === METHOD.USDT_TRC20 ||
+      v === METHOD.USDT_ERC20 ||
+      v === METHOD.USDT_SOL,
+    {
+      message: `Invalid method. Expected one of: ${METHOD.BTC}, ${METHOD.ETH}, ${METHOD.SOL}, ${METHOD.USDT_TRC20}, ${METHOD.USDT_ERC20}, ${METHOD.USDT_SOL} (or aliases BTC/ETH/SOL/USDT_...)`,
+    }
+  );
+
 /** ===== Admin endpoints ===== */
 
 /** Stats: shows deposit addresses grouped by method/status */
@@ -130,12 +224,16 @@ app.get("/api/admin/stats", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   try {
-    const rows = db.prepare(`
+    const rows = db
+      .prepare(
+        `
       SELECT method, status, COUNT(*) AS count
       FROM deposit_addresses
       GROUP BY method, status
       ORDER BY method, status
-    `).all();
+    `
+      )
+      .all();
 
     return res.json({ ok: true, rows });
   } catch (e) {
@@ -147,9 +245,10 @@ app.get("/api/admin/stats", (req, res) => {
  * ✅ SEED addresses into deposit_addresses
  * Body:
  * { "method": "bitcoin", "addresses": ["bc1...", "..."] }
+ * (also accepts "BTC", "ETH", etc)
  */
 const SeedSchema = z.object({
-  method: z.enum([METHOD.BTC, METHOD.ETH, METHOD.SOL, METHOD.USDT_TRC20, METHOD.USDT_ERC20, METHOD.USDT_SOL]),
+  method: MethodSchema,
   addresses: z.array(z.string().min(4)).min(1),
 });
 
@@ -200,7 +299,7 @@ app.post("/api/admin/seed", (req, res) => {
   }
 });
 
-/** Release expired reservations (kept from before) */
+/** Release expired reservations */
 app.post("/api/admin/release-expired", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -213,7 +312,7 @@ app.post("/api/admin/release-expired", (req, res) => {
 const OrderCreateSchema = z.object({
   usd: z.number().finite().min(20),
   solanaAddress: z.string().min(32).max(44),
-  payMethod: z.enum([METHOD.BTC, METHOD.ETH, METHOD.SOL, METHOD.USDT_TRC20, METHOD.USDT_ERC20, METHOD.USDT_SOL]),
+  payMethod: MethodSchema, // ✅ accepts BTC or bitcoin etc
   promoCode: z.string().optional().default(""),
 });
 
