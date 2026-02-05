@@ -1,4 +1,4 @@
-import "dotenv/config";
+﻿import "dotenv/config";
 import express from "express";
 import helmet from "helmet";
 import fetch from "node-fetch";
@@ -14,6 +14,7 @@ import { isValidSolanaAddress } from "./vpc/solanaValidate.js";
 import { reserveDepositAddress, releaseDepositAddress } from "./wallets/addressPool.js";
 import { priceForMethodUSD, METHOD } from "./vpc/prices.js";
 import { startWorker } from "./worker/worker.js";
+import { getUsdPrice } from "./services/priceFeed.js";
 
 migrate();
 
@@ -21,7 +22,7 @@ const app = express();
 app.use(helmet());
 
 /**
- * ✅ CORS + PRE-FLIGHT (OPTIONS)
+ * âœ… CORS + PRE-FLIGHT (OPTIONS)
  * Supports Hostinger preview (origin null) and normal websites.
  */
 app.use((req, res, next) => {
@@ -66,13 +67,7 @@ function expiresInMs(method) {
 }
 
 async function coingeckoPriceUSD(coingeckoId) {
-  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coingeckoId)}&vs_currencies=usd`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`CoinGecko HTTP ${r.status}`);
-  const data = await r.json();
-  const p = data?.[coingeckoId]?.usd;
-  if (typeof p !== "number" || !Number.isFinite(p) || p <= 0) throw new Error("Invalid CoinGecko price");
-  return p;
+  return await getUsdPrice(coingeckoId);
 }
 
 function roundTo(n, decimals) {
@@ -196,3 +191,6 @@ app.listen(config.PORT, () => {
   startWorker();
   console.log(`API listening on :${config.PORT}`);
 });
+
+
+
