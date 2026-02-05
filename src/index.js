@@ -310,7 +310,7 @@ app.post("/api/admin/release-expired", (req, res) => {
 /** ===== Business endpoints ===== */
 
 const OrderCreateSchema = z.object({
-  usd: z.number().finite().min(20),
+  usd: z.number().finite().min(1),
   solanaAddress: z.string().min(32).max(44),
   payMethod: MethodSchema, // ✅ accepts BTC or bitcoin etc
   promoCode: z.string().optional().default(""),
