@@ -1,81 +1,94 @@
-import { METHOD } from "../vpc/prices.js";
+﻿/**
+ * Address pool states:
+ * - AVAILABLE: free to assign
+ * - RESERVED: assigned to an order until reserved_until (unless payment seen)
+ * - INFLIGHT: payment seen on-chain => never auto-release until order is fulfilled/failed
+ */
 
-function envPool(method) {
-  switch (method) {
-    case METHOD.BTC:
-      return process.env.POOL_BTC;
-    case METHOD.ETH:
-      return process.env.POOL_ETH;
-    case METHOD.SOL:
-      return process.env.POOL_SOL;
-    case METHOD.USDT_TRC20:
-      return process.env.POOL_USDT_TRC20;
-    case METHOD.USDT_ERC20:
-      return process.env.POOL_USDT_ERC20;
-    case METHOD.USDT_SOL:
-      return process.env.POOL_USDT_SOL;
-    default:
-      throw new Error(`Unknown pool for ${method}`);
-  }
+export function reserveDepositAddress(db, method, orderId, reservedUntil) {
+  // 1) clean up expired reservations (ONLY if payment not seen)
+  releaseDepositAddress(db);
+
+  // 2) pick one available address
+  const row = db.prepare(`
+    SELECT address
+    FROM deposit_addresses
+    WHERE method = ? AND status = 'AVAILABLE'
+    ORDER BY address ASC
+    LIMIT 1
+  `).get(method);
+
+  if (!row?.address) return null;
+
+  // 3) reserve it (atomic-ish: only if still available)
+  const res = db.prepare(`
+    UPDATE deposit_addresses
+    SET status = 'RESERVED',
+        reserved_order_id = ?,
+        reserved_until = ?
+    WHERE method = ? AND address = ? AND status = 'AVAILABLE'
+  `).run(orderId, reservedUntil, method, row.address);
+
+  if (res.changes !== 1) return null;
+  return row.address;
 }
 
-function parseAddresses(csv) {
-  return String(csv || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function ensurePoolSeeded(db, method) {
-  const csv = envPool(method);
-  const addresses = parseAddresses(csv);
-  const stmt = db.prepare(
-    `INSERT OR IGNORE INTO address_locks(pay_method, address, locked_by_order_id, locked_until)
-     VALUES (?, ?, NULL, NULL)`
-  );
-  const tx = db.transaction(() => {
-    for (const a of addresses) stmt.run(method, a);
-  });
-  tx();
-}
-
-export function reserveDepositAddress(db, method, orderId, lockedUntil) {
-  ensurePoolSeeded(db, method);
-
-  const row = db
-    .prepare(
-      `SELECT address FROM address_locks
-       WHERE pay_method = ?
-         AND (locked_until IS NULL OR locked_until < ?)
-       LIMIT 1`
-    )
-    .get(method, Date.now());
-
-  if (!row) return null;
-
-  const address = row.address;
-
-  const updated = db
-    .prepare(
-      `UPDATE address_locks
-       SET locked_by_order_id = ?, locked_until = ?
-       WHERE pay_method = ? AND address = ?
-         AND (locked_until IS NULL OR locked_until < ?)`
-    )
-    .run(orderId, lockedUntil, method, address, Date.now());
-
-  if (updated.changes !== 1) return null;
-  return address;
-}
-
+/**
+ * Auto-release only reservations that are expired AND whose order has NOT seen payment.
+ * If payment_seen = 1, address should NOT be released here (it becomes INFLIGHT).
+ */
 export function releaseDepositAddress(db) {
   const now = Date.now();
-  const r = db
-    .prepare(
-      `UPDATE address_locks
-       SET locked_by_order_id = NULL, locked_until = NULL
-       WHERE locked_until IS NOT NULL AND locked_until < ?`
-    )
-    .run(now);
-  return r.changes;
+
+  // Release RESERVED addresses for orders that are still unpaid/unseen.
+  // We join orders to ensure payment_seen=0 and status still PENDING (or EXPIRED).
+  const res = db.prepare(`
+    UPDATE deposit_addresses
+    SET status = 'AVAILABLE',
+        reserved_order_id = NULL,
+        reserved_until = NULL
+    WHERE status = 'RESERVED'
+      AND reserved_until IS NOT NULL
+      AND reserved_until < ?
+      AND reserved_order_id IN (
+        SELECT id
+        FROM orders
+        WHERE payment_seen = 0
+          AND (status = 'PENDING' OR status = 'EXPIRED')
+      )
+  `).run(now);
+
+  return res.changes || 0;
+}
+
+/**
+ * Call this as soon as you detect ANY payment for an order.
+ * It prevents auto-release even if reserved_until is passed.
+ */
+export function lockDepositAddressForOrder(db, orderId) {
+  const res = db.prepare(`
+    UPDATE deposit_addresses
+    SET status = 'INFLIGHT'
+    WHERE reserved_order_id = ?
+      AND status = 'RESERVED'
+  `).run(orderId);
+
+  return res.changes || 0;
+}
+
+/**
+ * Recycle address ONLY when order is finished (FULFILLED / FAILED / EXPIRED without payment, etc.).
+ * You said you want recycle after VPC sent => call this at the end of fulfillment.
+ */
+export function recycleDepositAddressForOrder(db, orderId) {
+  const res = db.prepare(`
+    UPDATE deposit_addresses
+    SET status = 'AVAILABLE',
+        reserved_order_id = NULL,
+        reserved_until = NULL
+    WHERE reserved_order_id = ?
+      AND (status = 'RESERVED' OR status = 'INFLIGHT')
+  `).run(orderId);
+
+  return res.changes || 0;
 }
