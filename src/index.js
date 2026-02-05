@@ -1,7 +1,6 @@
 ﻿import "dotenv/config";
 import express from "express";
 import helmet from "helmet";
-import fetch from "node-fetch";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import path from "path";
@@ -22,7 +21,7 @@ const app = express();
 app.use(helmet());
 
 /**
- * âœ… CORS + PRE-FLIGHT (OPTIONS)
+ * ✅ CORS + PRE-FLIGHT (OPTIONS)
  * Supports Hostinger preview (origin null) and normal websites.
  */
 app.use((req, res, next) => {
@@ -43,7 +42,26 @@ app.use((req, res, next) => {
   next();
 });
 
+// ✅ Parse JSON bodies
 app.use(express.json({ limit: "32kb" }));
+
+// ✅ Show real JSON parse errors instead of "Bad Request" HTML
+app.use((err, req, res, next) => {
+  if (err && err.type === "entity.parse.failed") {
+    console.error("❌ JSON parse error:", err.message);
+    return res.status(400).json({ error: "Invalid JSON body", message: err.message });
+  }
+  return next(err);
+});
+
+// ✅ Debug endpoint to verify what server receives
+app.post("/api/debug/echo", (req, res) => {
+  return res.json({
+    ok: true,
+    headers: req.headers,
+    body: req.body,
+  });
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,6 +85,7 @@ function expiresInMs(method) {
 }
 
 async function coingeckoPriceUSD(coingeckoId) {
+  // your priceFeed.js handles CoinGecko + fallback
   return await getUsdPrice(coingeckoId);
 }
 
@@ -79,11 +98,18 @@ function roundTo(n, decimals) {
 app.post("/api/order", async (req, res) => {
   try {
     const parsed = OrderCreateSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid payload",
+        details: parsed.error.flatten()
+      });
+    }
 
     const { usd, solanaAddress, payMethod, promoCode } = parsed.data;
 
-    if (!isValidSolanaAddress(solanaAddress)) return res.status(400).json({ error: "Invalid Solana address" });
+    if (!isValidSolanaAddress(solanaAddress)) {
+      return res.status(400).json({ error: "Invalid Solana address" });
+    }
 
     const promo = (promoCode || "").trim().toLowerCase();
     const discountRate = computeDiscountRate(usd, promo);
@@ -102,7 +128,9 @@ app.post("/api/order", async (req, res) => {
     const expiresAt = createdAt + expiresInMs(payMethod);
 
     const depositAddress = reserveDepositAddress(db, payMethod, orderId, expiresAt);
-    if (!depositAddress) return res.status(503).json({ error: "No deposit addresses available (pool exhausted)" });
+    if (!depositAddress) {
+      return res.status(503).json({ error: "No deposit addresses available (pool exhausted)" });
+    }
 
     db.prepare(
       `INSERT INTO orders
@@ -141,6 +169,7 @@ app.post("/api/order", async (req, res) => {
       expiresAt
     });
   } catch (e) {
+    console.error("❌ /api/order error:", e);
     return res.status(500).json({ error: "Server error", message: String(e?.message || e) });
   }
 });
@@ -191,6 +220,3 @@ app.listen(config.PORT, () => {
   startWorker();
   console.log(`API listening on :${config.PORT}`);
 });
-
-
-
