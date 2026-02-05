@@ -45,13 +45,63 @@ app.use((req, res, next) => {
 // ✅ Parse JSON bodies
 app.use(express.json({ limit: "32kb" }));
 
-// ✅ Show real JSON parse errors instead of HTML "Bad Request"
+// ✅ Show real JSON parse errors instead of "Bad Request" HTML
 app.use((err, req, res, next) => {
   if (err && err.type === "entity.parse.failed") {
     console.error("❌ JSON parse error:", err.message);
     return res.status(400).json({ error: "Invalid JSON body", message: err.message });
   }
   return next(err);
+});
+
+// ✅ Debug endpoint to verify what server receives
+app.post("/api/debug/echo", (req, res) => {
+  return res.json({
+    ok: true,
+    headers: req.headers,
+    body: req.body,
+  });
+});
+
+// ✅ Debug endpoint to inspect DB + tables
+app.get("/api/debug/db", (req, res) => {
+  try {
+    const sqlitePath = process.env.SQLITE_PATH || "data.sqlite";
+
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+      .all()
+      .map((r) => r.name);
+
+    const hasDepositAddresses = tables.includes("deposit_addresses");
+    const hasOrders = tables.includes("orders");
+
+    const depositCount = hasDepositAddresses
+      ? db.prepare("SELECT COUNT(*) AS c FROM deposit_addresses").get().c
+      : null;
+
+    const reservedCount = hasDepositAddresses
+      ? db.prepare("SELECT COUNT(*) AS c FROM deposit_addresses WHERE status IN ('RESERVED','INFLIGHT')").get().c
+      : null;
+
+    const ordersCount = hasOrders
+      ? db.prepare("SELECT COUNT(*) AS c FROM orders").get().c
+      : null;
+
+    return res.json({
+      ok: true,
+      sqlitePath,
+      tables,
+      hasDepositAddresses,
+      hasOrders,
+      depositCount,
+      reservedCount,
+      ordersCount,
+    });
+  } catch (e) {
+    console.error("❌ /api/debug/db error:", e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
 });
 
 const __filename = fileURLToPath(import.meta.url);
@@ -63,56 +113,20 @@ app.use("/", express.static(path.join(__dirname, "..", "public")));
 /** Health */
 app.get("/health", (req, res) => res.json({ ok: true }));
 
-/** ✅ Debug: echo what server receives */
-app.post("/api/debug/echo", (req, res) => {
-  return res.json({
-    ok: true,
-    headers: req.headers,
-    body: req.body,
-  });
-});
-
-/** ✅ Debug: list DB tables + sqlite path (CRUCIAL pour "no such table") */
-app.get("/api/debug/db", (req, res) => {
-  try {
-    const tables = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-      .all()
-      .map((r) => r.name);
-
-    return res.json({
-      ok: true,
-      sqlitePath: process.env.SQLITE_PATH || "data.sqlite",
-      tables,
-    });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e?.message || e) });
-  }
-});
-
 const OrderCreateSchema = z.object({
   usd: z.number().finite().min(20),
   solanaAddress: z.string().min(32).max(44),
-  // ⚠️ IMPORTANT : payMethod doit être une de ces valeurs (strings)
-  payMethod: z.enum([
-    METHOD.BTC,
-    METHOD.ETH,
-    METHOD.SOL,
-    METHOD.USDT_TRC20,
-    METHOD.USDT_ERC20,
-    METHOD.USDT_SOL,
-  ]),
-  promoCode: z.string().optional().default(""),
+  payMethod: z.enum([METHOD.BTC, METHOD.ETH, METHOD.SOL, METHOD.USDT_TRC20, METHOD.USDT_ERC20, METHOD.USDT_SOL]),
+  promoCode: z.string().optional().default("")
 });
 
 function expiresInMs(method) {
-  // BTC plus long
   if (method === METHOD.BTC) return 4 * 60 * 60 * 1000;
   return 30 * 60 * 1000;
 }
 
-async function priceUSDFor(coingeckoId) {
-  // priceFeed.js gère coingecko + fallback + cache
+async function coingeckoPriceUSD(coingeckoId) {
+  // priceFeed.js handles CoinGecko + fallback
   return await getUsdPrice(coingeckoId);
 }
 
@@ -128,7 +142,7 @@ app.post("/api/order", async (req, res) => {
     if (!parsed.success) {
       return res.status(400).json({
         error: "Invalid payload",
-        details: parsed.error.flatten(),
+        details: parsed.error.flatten()
       });
     }
 
@@ -145,7 +159,7 @@ app.post("/api/order", async (req, res) => {
     const vpcAmount = computeVpcAmount(usd, effectiveVpcPrice);
 
     const { coingeckoId, currencyLabel } = priceForMethodUSD(payMethod);
-    const priceUSD = await priceUSDFor(coingeckoId);
+    const priceUSD = await coingeckoPriceUSD(coingeckoId);
 
     const cryptoDecimals = payMethod === METHOD.BTC ? 8 : 6;
     const expectedCryptoAmount = roundTo(usd / priceUSD, cryptoDecimals);
@@ -180,7 +194,7 @@ app.post("/api/order", async (req, res) => {
       currencyLabel,
       depositAddress,
       createdAt,
-      expiresAt,
+      expiresAt
     });
 
     return res.json({
@@ -193,7 +207,7 @@ app.post("/api/order", async (req, res) => {
       currencyLabel,
       depositAddress,
       expectedCryptoAmount,
-      expiresAt,
+      expiresAt
     });
   } catch (e) {
     console.error("❌ /api/order error:", e);
@@ -223,7 +237,7 @@ app.get("/api/order/:id", (req, res) => {
     paymentSeen: Boolean(row.payment_seen),
     paymentConfirmed: Boolean(row.payment_confirmed),
     paymentTxid: row.payment_txid,
-    fulfillTxSignature: row.fulfill_tx_sig,
+    fulfillTxSignature: row.fulfill_tx_sig
   });
 });
 
