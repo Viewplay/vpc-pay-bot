@@ -35,7 +35,7 @@ app.use((req, res, next) => {
   }
 
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token");
   res.setHeader("Access-Control-Max-Age", "86400");
 
   if (req.method === "OPTIONS") return res.sendStatus(204);
@@ -54,20 +54,23 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 
-// ✅ Debug endpoint to verify what server receives
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+/** Serve optional static frontend (for quick testing) */
+app.use("/", express.static(path.join(__dirname, "..", "public")));
+
+/** Health */
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+/** Debug echo endpoint (helps verify what server receives) */
 app.post("/api/debug/echo", (req, res) => {
-  return res.json({
-    ok: true,
-    headers: req.headers,
-    body: req.body,
-  });
+  return res.json({ ok: true, headers: req.headers, body: req.body });
 });
 
-// ✅ Debug endpoint to inspect DB + tables
+/** Debug DB info (tables + counts) */
 app.get("/api/debug/db", (req, res) => {
   try {
-    const sqlitePath = process.env.SQLITE_PATH || "data.sqlite";
-
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
       .all()
@@ -81,7 +84,7 @@ app.get("/api/debug/db", (req, res) => {
       : null;
 
     const reservedCount = hasDepositAddresses
-      ? db.prepare("SELECT COUNT(*) AS c FROM deposit_addresses WHERE status IN ('RESERVED','INFLIGHT')").get().c
+      ? db.prepare("SELECT COUNT(*) AS c FROM deposit_addresses WHERE status <> 'FREE'").get().c
       : null;
 
     const ordersCount = hasOrders
@@ -90,7 +93,7 @@ app.get("/api/debug/db", (req, res) => {
 
     return res.json({
       ok: true,
-      sqlitePath,
+      sqlitePath: process.env.SQLITE_PATH || "data.sqlite",
       tables,
       hasDepositAddresses,
       hasOrders,
@@ -99,25 +102,119 @@ app.get("/api/debug/db", (req, res) => {
       ordersCount,
     });
   } catch (e) {
-    console.error("❌ /api/debug/db error:", e);
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+/** ===== Admin auth helper ===== */
+function requireAdmin(req, res) {
+  const expected = (process.env.ADMIN_TOKEN || "").trim();
+  const got = String(req.headers["x-admin-token"] || "").trim();
 
-/** Serve optional static frontend (for quick testing) */
-app.use("/", express.static(path.join(__dirname, "..", "public")));
+  if (!expected) {
+    // If you forgot to set ADMIN_TOKEN on Render, show clear message
+    res.status(500).json({ error: "ADMIN_TOKEN is not set on server (Render env var missing)" });
+    return false;
+  }
+  if (!got || got !== expected) {
+    res.status(401).json({ error: "Unauthorized (bad X-Admin-Token)" });
+    return false;
+  }
+  return true;
+}
 
-/** Health */
-app.get("/health", (req, res) => res.json({ ok: true }));
+/** ===== Admin endpoints ===== */
+
+/** Stats: shows deposit addresses grouped by method/status */
+app.get("/api/admin/stats", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  try {
+    const rows = db.prepare(`
+      SELECT method, status, COUNT(*) AS count
+      FROM deposit_addresses
+      GROUP BY method, status
+      ORDER BY method, status
+    `).all();
+
+    return res.json({ ok: true, rows });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+/**
+ * ✅ SEED addresses into deposit_addresses
+ * Body:
+ * { "method": "bitcoin", "addresses": ["bc1...", "..."] }
+ */
+const SeedSchema = z.object({
+  method: z.enum([METHOD.BTC, METHOD.ETH, METHOD.SOL, METHOD.USDT_TRC20, METHOD.USDT_ERC20, METHOD.USDT_SOL]),
+  addresses: z.array(z.string().min(4)).min(1),
+});
+
+app.post("/api/admin/seed", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const parsed = SeedSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  const { method, addresses } = parsed.data;
+
+  try {
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO deposit_addresses
+        (method, address, status, reserved_by, reserved_until, last_used_at)
+      VALUES
+        (@method, @address, 'FREE', NULL, NULL, NULL)
+    `);
+
+    const tx = db.transaction((list) => {
+      let inserted = 0;
+      let ignored = 0;
+
+      for (const address of list) {
+        const a = String(address).trim();
+        if (!a) continue;
+
+        const r = insert.run({ method, address: a });
+        if (r.changes === 1) inserted++;
+        else ignored++;
+      }
+      return { inserted, ignored };
+    });
+
+    const result = tx(addresses);
+
+    return res.json({
+      ok: true,
+      method,
+      inserted: result.inserted,
+      ignored: result.ignored,
+      total: addresses.length,
+    });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+/** Release expired reservations (kept from before) */
+app.post("/api/admin/release-expired", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const released = releaseDepositAddress(db);
+  return res.json({ ok: true, released });
+});
+
+/** ===== Business endpoints ===== */
 
 const OrderCreateSchema = z.object({
   usd: z.number().finite().min(20),
   solanaAddress: z.string().min(32).max(44),
   payMethod: z.enum([METHOD.BTC, METHOD.ETH, METHOD.SOL, METHOD.USDT_TRC20, METHOD.USDT_ERC20, METHOD.USDT_SOL]),
-  promoCode: z.string().optional().default("")
+  promoCode: z.string().optional().default(""),
 });
 
 function expiresInMs(method) {
@@ -126,7 +223,6 @@ function expiresInMs(method) {
 }
 
 async function coingeckoPriceUSD(coingeckoId) {
-  // priceFeed.js handles CoinGecko + fallback
   return await getUsdPrice(coingeckoId);
 }
 
@@ -140,10 +236,7 @@ app.post("/api/order", async (req, res) => {
   try {
     const parsed = OrderCreateSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({
-        error: "Invalid payload",
-        details: parsed.error.flatten()
-      });
+      return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
     }
 
     const { usd, solanaAddress, payMethod, promoCode } = parsed.data;
@@ -194,7 +287,7 @@ app.post("/api/order", async (req, res) => {
       currencyLabel,
       depositAddress,
       createdAt,
-      expiresAt
+      expiresAt,
     });
 
     return res.json({
@@ -207,7 +300,7 @@ app.post("/api/order", async (req, res) => {
       currencyLabel,
       depositAddress,
       expectedCryptoAmount,
-      expiresAt
+      expiresAt,
     });
   } catch (e) {
     console.error("❌ /api/order error:", e);
@@ -237,7 +330,7 @@ app.get("/api/order/:id", (req, res) => {
     paymentSeen: Boolean(row.payment_seen),
     paymentConfirmed: Boolean(row.payment_confirmed),
     paymentTxid: row.payment_txid,
-    fulfillTxSignature: row.fulfill_tx_sig
+    fulfillTxSignature: row.fulfill_tx_sig,
   });
 });
 
@@ -251,75 +344,7 @@ app.post("/api/order/:id/paid", (req, res) => {
   return res.json({ ok: true });
 });
 
-/** Admin */
-app.post("/api/admin/release-expired", (req, res) => {
-  const released = releaseDepositAddress(db);
-  return res.json({ ok: true, released });
-});
-
-
-/** Admin stats */
-app.get("/api/admin/stats", (req, res) => {
-  try {
-    const rows = db.prepare(`
-      SELECT method, status, COUNT(*) AS c
-      FROM deposit_addresses
-      GROUP BY method, status
-      ORDER BY method, status
-    `).all();
-
-    return res.json({ ok: true, rows });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e?.message || e) });
-  }
-});
-
-/** Admin: seed addresses (bulk insert) */
-app.post("/api/admin/seed-addresses", (req, res) => {
-  try {
-    const token = req.headers["x-admin-token"];
-    if (!process.env.ADMIN_TOKEN || token !== process.env.ADMIN_TOKEN) {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
-    }
-
-    const body = req.body || {};
-    const method = String(body.method || "").trim();
-    const addresses = Array.isArray(body.addresses) ? body.addresses : [];
-
-    if (!method) return res.status(400).json({ ok: false, error: "Missing method" });
-    if (!addresses.length) return res.status(400).json({ ok: false, error: "Missing addresses[]" });
-
-    const insertStmt = db.prepare(`
-      INSERT OR IGNORE INTO deposit_addresses(method, address, status, reserved_by, reserved_until, last_used_at)
-      VALUES (@method, @address, 'FREE', NULL, NULL, NULL)
-    `);
-
-    const tx = db.transaction((items) => {
-      let added = 0;
-      for (const a of items) {
-        const address = String(a || "").trim();
-        if (!address) continue;
-        const info = insertStmt.run({ method, address });
-        if (info.changes > 0) added += 1;
-      }
-      return added;
-    });
-
-    const added = tx(addresses);
-
-    const total = db.prepare(
-      "SELECT COUNT(*) AS c FROM deposit_addresses WHERE method=?"
-    ).get(method).c;
-
-    return res.json({ ok: true, method, added, total });
-  } catch (e) {
-    console.error("❌ seed error:", e);
-    return res.status(500).json({ ok: false, error: String(e?.message || e) });
-  }
-});
-
 app.listen(config.PORT, () => {
   startWorker();
   console.log(`API listening on :${config.PORT}`);
 });
-
