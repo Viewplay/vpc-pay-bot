@@ -257,7 +257,69 @@ app.post("/api/admin/release-expired", (req, res) => {
   return res.json({ ok: true, released });
 });
 
+
+/** Admin stats */
+app.get("/api/admin/stats", (req, res) => {
+  try {
+    const rows = db.prepare(`
+      SELECT method, status, COUNT(*) AS c
+      FROM deposit_addresses
+      GROUP BY method, status
+      ORDER BY method, status
+    `).all();
+
+    return res.json({ ok: true, rows });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+/** Admin: seed addresses (bulk insert) */
+app.post("/api/admin/seed-addresses", (req, res) => {
+  try {
+    const token = req.headers["x-admin-token"];
+    if (!process.env.ADMIN_TOKEN || token !== process.env.ADMIN_TOKEN) {
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
+
+    const body = req.body || {};
+    const method = String(body.method || "").trim();
+    const addresses = Array.isArray(body.addresses) ? body.addresses : [];
+
+    if (!method) return res.status(400).json({ ok: false, error: "Missing method" });
+    if (!addresses.length) return res.status(400).json({ ok: false, error: "Missing addresses[]" });
+
+    const insertStmt = db.prepare(`
+      INSERT OR IGNORE INTO deposit_addresses(method, address, status, reserved_by, reserved_until, last_used_at)
+      VALUES (@method, @address, 'FREE', NULL, NULL, NULL)
+    `);
+
+    const tx = db.transaction((items) => {
+      let added = 0;
+      for (const a of items) {
+        const address = String(a || "").trim();
+        if (!address) continue;
+        const info = insertStmt.run({ method, address });
+        if (info.changes > 0) added += 1;
+      }
+      return added;
+    });
+
+    const added = tx(addresses);
+
+    const total = db.prepare(
+      "SELECT COUNT(*) AS c FROM deposit_addresses WHERE method=?"
+    ).get(method).c;
+
+    return res.json({ ok: true, method, added, total });
+  } catch (e) {
+    console.error("❌ seed error:", e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.listen(config.PORT, () => {
   startWorker();
   console.log(`API listening on :${config.PORT}`);
 });
+
