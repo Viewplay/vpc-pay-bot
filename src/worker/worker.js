@@ -53,27 +53,31 @@ export function startWorker() {
 
         const pending = listPendingOrders(100);
         for (const order of pending) {
-          const result = await checkPayment(order);
+          const current = db.prepare(`SELECT * FROM orders WHERE id=?`).get(order.id);
+          if (!current || current.status !== "PENDING" || Number(current.expires_at || 0) < Date.now()) continue;
 
-          if (result.seen && !order.payment_seen) updateSeen(order.id, result.txid || null);
+          const result = await checkPayment(current);
 
-          if (result.confirmed && order.status === "PENDING") {
-            updateConfirmed(order.id, result.txid || null);
-            const expected = Number(order.expected_crypto_amount || 0);
+          if (result.seen && !current.payment_seen) updateSeen(current.id, result.txid || null);
+
+          if (result.confirmed && current.status === "PENDING") {
+            updateConfirmed(current.id, result.txid || null);
+            const fresh = db.prepare(`SELECT * FROM orders WHERE id=?`).get(current.id) || current;
+            const expected = Number(fresh.expected_crypto_amount || 0);
             const received = Number(result.received || 0);
 
-            let vpcToSend = Number(order.vpc_amount || 0);
+            let vpcToSend = Number(fresh.vpc_amount || 0);
             if (expected > 0 && received > 0) {
               const ratio = Math.min(1, received / expected);
               vpcToSend = Math.max(1, Math.floor(vpcToSend * ratio));
             }
 
             const sig = await sendVPC({
-              solanaRecipient: order.solana_address,
+              solanaRecipient: fresh.solana_address,
               vpcAmount: vpcToSend
             });
-            markFulfilled(order.id, sig);
-            console.log(`FULFILLED order=${order.id} sig=${sig}`);
+            markFulfilled(fresh.id, sig);
+            console.log(`FULFILLED order=${fresh.id} sig=${sig}`);
           }
         }
       } catch (e) {
