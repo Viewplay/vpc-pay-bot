@@ -311,7 +311,7 @@ app.post("/api/admin/release-expired", (req, res) => {
 
 const OrderCreateSchema = z.object({
   usd: z.number().finite().min(1),
-  solanaAddress: z.string().min(32).max(44),
+  payoutAddress: z.string().min(16).max(120),
   payMethod: MethodSchema, // ✅ accepts BTC or bitcoin etc
   promoCode: z.string().optional().default(""),
 });
@@ -338,13 +338,8 @@ app.post("/api/order", async (req, res) => {
       return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
     }
 
-    const { usd, solanaAddress, payMethod, promoCode } = parsed.data;
-
-    if (!isValidSolanaAddress(solanaAddress)) {
-      return res.status(400).json({ error: "Invalid Solana address" });
-    }
-
-    const promo = (promoCode || "").trim().toLowerCase();
+    const { usd, payoutAddress, payMethod, promoCode } = parsed.data;
+const promo = (promoCode || "").trim().toLowerCase();
     const discountRate = computeDiscountRate(usd, promo);
 
     const effectiveVpcPrice = config.VPC_PRICE_USD * (1 - discountRate);
@@ -371,14 +366,14 @@ app.post("/api/order", async (req, res) => {
          expected_crypto_amount, crypto_currency_label, deposit_address, created_at, expires_at,
          start_block, payment_seen, payment_confirmed, payment_txid, fulfill_tx_sig)
        VALUES
-        (@id, 'PENDING', @usd, @payMethod, @solanaAddress, @promoCode, @discountRate, @vpcAmount,
+        (@id, 'PENDING', @usd, @payMethod, @payoutAddress, @promoCode, @discountRate, @vpcAmount,
          @expectedCryptoAmount, @currencyLabel, @depositAddress, @createdAt, @expiresAt,
          NULL, 0, 0, NULL, NULL)`
     ).run({
       id: orderId,
       usd,
       payMethod,
-      solanaAddress,
+      payoutAddress,
       promoCode: promo,
       discountRate,
       vpcAmount,
@@ -411,13 +406,13 @@ app.post("/api/order", async (req, res) => {
 app.patch("/api/order/:id", (req, res) => {
   try {
     const orderId = String(req.params.id || "");
-    const { usd, solanaAddress, promoCode } = req.body || {};
+    const { usd, payoutAddress, promoCode } = req.body || {};
 
     if (usd !== undefined && (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0)) {
       return res.status(400).json({ ok: false, error: "Invalid usd" });
     }
-    if (solanaAddress !== undefined && (typeof solanaAddress !== "string" || solanaAddress.length < 32 || solanaAddress.length > 44)) {
-      return res.status(400).json({ ok: false, error: "Invalid solanaAddress" });
+    if (payoutAddress !== undefined && (typeof payoutAddress !== "string" || payoutAddress.length < 32 || payoutAddress.length > 44)) {
+      return res.status(400).json({ ok: false, error: "Invalid payoutAddress" });
     }
     if (promoCode !== undefined && typeof promoCode !== "string") {
       return res.status(400).json({ ok: false, error: "Invalid promoCode" });
@@ -435,7 +430,7 @@ app.patch("/api/order/:id", (req, res) => {
     const expiresAt = now + expiresInMs(order.pay_method);
 
     const nextUsd = (usd !== undefined) ? usd : order.usd;
-    const nextSol = (solanaAddress !== undefined) ? solanaAddress : order.solana_address;
+    const nextSol = (payoutAddress !== undefined) ? solanaAddress : order.solana_address;
     const nextPromo = (promoCode !== undefined) ? String(promoCode).trim().toLowerCase() : order.promo_code;
 
     db.prepare(
@@ -468,7 +463,7 @@ app.get("/api/order/:id", (req, res) => {
     status: row.status,
     usd: row.usd,
     payMethod: row.pay_method,
-    solanaAddress: row.solana_address,
+    payoutAddress: row.solana_address,
     discountRate: row.discount_rate,
     vpcAmount: row.vpc_amount,
     depositAddress: row.deposit_address,
