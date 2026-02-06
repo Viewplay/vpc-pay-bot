@@ -65,6 +65,17 @@ app.use("/", express.static(path.join(__dirname, "..", "public")));
 /** Health */
 app.get("/health", (req, res) => res.json({ ok: true }));
 
+
+
+/** Debug version (Render) */
+app.get("/api/debug/version", (req, res) => {
+  return res.json({
+    ok: true,
+    commit: process.env.RENDER_GIT_COMMIT || null,
+    serviceId: process.env.RENDER_SERVICE_ID || null,
+    node: process.version,
+  });
+});
 /** Debug echo endpoint (helps verify what server receives) */
 app.post("/api/debug/echo", (req, res) => {
   return res.json({ ok: true, headers: req.headers, body: req.body });
