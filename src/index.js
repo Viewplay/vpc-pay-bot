@@ -316,10 +316,7 @@ const OrderCreateSchema = z.object({
   promoCode: z.string().optional().default(""),
 });
 
-function expiresInMs(method) {
-  if (method === METHOD.BTC) return 4 * 60 * 60 * 1000;
-  return 30 * 60 * 1000;
-}
+function expiresInMs(method) { return 30 * 60 * 1000; }
 
 async function coingeckoPriceUSD(coingeckoId) {
   return await getUsdPrice(coingeckoId);
