@@ -58,7 +58,9 @@ export function startWorker() {
 
           const result = await checkPayment(current);
 
-          if (result.seen && !current.payment_seen) updateSeen(current.id, result.txid || null);
+          
+          await sleep(250);
+if (result.seen && !current.payment_seen) updateSeen(current.id, result.txid || null);
 
           if (result.confirmed && current.status === "PENDING") {
             updateConfirmed(current.id, result.txid || null);
