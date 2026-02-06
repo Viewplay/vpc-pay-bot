@@ -43,15 +43,13 @@ export function getOrReserveDepositAddress(db, method, orderId, expiresAt) {
 
   const existing = db.prepare(`
     SELECT address
-    FROM deposit_addresses
-    WHERE method = ?
-      AND status = 'RESERVED'
-      AND reserved_by = ?
-      AND reserved_until IS NOT NULL
-      AND reserved_until > ?
-    ORDER BY id ASC
-    LIMIT 1
-  `).get(method, orderId, now);
+      FROM deposit_addresses
+      WHERE method = ?
+        AND status = 'RESERVED'
+        AND reserved_by = ?
+      ORDER BY id ASC
+      LIMIT 1
+  `).get(method, orderId);
 
   if (existing?.address) {
     db.prepare(`
