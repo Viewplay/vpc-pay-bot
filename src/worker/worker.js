@@ -59,9 +59,18 @@ export function startWorker() {
 
           if (result.confirmed && order.status === "PENDING") {
             updateConfirmed(order.id, result.txid || null);
+            const expected = Number(order.expected_crypto_amount || 0);
+            const received = Number(result.received || 0);
+
+            let vpcToSend = Number(order.vpc_amount || 0);
+            if (expected > 0 && received > 0) {
+              const ratio = Math.min(1, received / expected);
+              vpcToSend = Math.max(1, Math.floor(vpcToSend * ratio));
+            }
+
             const sig = await sendVPC({
               solanaRecipient: order.solana_address,
-              vpcAmount: order.vpc_amount
+              vpcAmount: vpcToSend
             });
             markFulfilled(order.id, sig);
             console.log(`FULFILLED order=${order.id} sig=${sig}`);

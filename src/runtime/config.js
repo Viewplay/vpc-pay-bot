@@ -1,4 +1,4 @@
-export const config = {
+﻿export const config = {
   PORT: Number(process.env.PORT || 3000),
 
   VPC_PRICE_USD: Number(process.env.VPC_PRICE_USD || 0.0019),

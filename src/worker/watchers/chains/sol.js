@@ -8,6 +8,10 @@ function withinTolerance(received, expected) {
   return received + tol >= expected;
 }
 
+function isEnough(received, expected, minReceived) {
+  const minOk = Number.isFinite(minReceived) && minReceived > 0 ? received >= minReceived : false;
+  return withinTolerance(received, expected) || minOk;
+}
 function pickCommitment(status) {
   if (status === "finalized") return "finalized";
   return "confirmed";
@@ -49,7 +53,7 @@ export async function checkSOL(order) {
       if (!tx) continue;
 
       const received = calcSolReceivedFromBalances(tx, deposit58);
-      if (!withinTolerance(received, expected)) continue;
+      if (!isEnough(received, expected, Number(config.MIN_SOL_RECEIVED || 0))) continue;
 
       return {
         seen: true,
@@ -97,7 +101,7 @@ export async function checkSOL(order) {
       const amountStr = info.tokenAmount?.uiAmountString ?? info.amount;
       const received = Number(amountStr);
       if (!Number.isFinite(received)) continue;
-      if (!withinTolerance(received, expected)) continue;
+      if (!isEnough(received, expected, Number(config.MIN_SOL_RECEIVED || 0))) continue;
 
       return {
         seen: true,
