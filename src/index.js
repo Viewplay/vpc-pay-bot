@@ -505,13 +505,9 @@ const promo = (promoCode || "").trim().toLowerCase();
       depositAddress,
       createdAt,
       expiresAt,
-    });    let moonpayUrl: (clientMethod === "card" ? buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId }) : null) = null;
-    if (clientMethod === "card") {
-      moonpayUrl: (clientMethod === "card" ? buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId }) : null) = buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId });
-    }
+    });
 
-
-
+    const moonpayUrl = (clientMethod === "card") ? buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId }) : null;
     return res.json({
       orderId,
       status: "PENDING",
@@ -521,7 +517,10 @@ const promo = (promoCode || "").trim().toLowerCase();
       payMethod: clientMethod,
       currencyLabel,
       depositAddress,
-      expectedCryptoAmount, expiresAt, moonpayUrl: (clientMethod === "card" ? buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId }) : null) });
+      expectedCryptoAmount,
+      expiresAt,
+      moonpayUrl,
+    });
   } catch (e) {
     console.error("❌ /api/order error:", e);
     return res.status(500).json({ error: "Server error", message: String(e?.message || e) });
