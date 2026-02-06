@@ -543,7 +543,46 @@ app.post("/api/order/:id/paid", (req, res) => {
   return res.json({ ok: true });
 });
 
+function expireOrders(db) {
+  const now = Date.now();
+
+  // find expired pending orders
+  const rows = db.prepare(`
+    SELECT id, pay_method, deposit_address
+    FROM orders
+    WHERE status = 'PENDING'
+      AND expires_at IS NOT NULL
+      AND expires_at < ?
+  `).all(now);
+
+  if (!rows || rows.length === 0) return 0;
+
+  // mark orders expired
+  db.prepare(`
+    UPDATE orders
+    SET status = 'EXPIRED'
+    WHERE status = 'PENDING' AND expires_at < ?
+  `).run(now);
+
+  // free their reserved addresses (only if still reserved by that order)
+  const freeStmt = db.prepare(`
+    UPDATE deposit_addresses
+    SET status='FREE', reserved_by=NULL, reserved_until=NULL
+    WHERE method=? AND address=? AND status='RESERVED' AND reserved_by=?
+  `);
+
+  for (const r of rows) {
+    freeStmt.run(r.pay_method, r.deposit_address, r.id);
+  }
+
+  return rows.length;
+}
+
 app.listen(config.PORT, () => {
   startWorker();
+  try { releaseDepositAddress(db); } catch (e) { console.error("❌ release-expired loop:", e); }
+  setInterval(() => {
+    try { releaseDepositAddress(db); } catch (e) { console.error("❌ release-expired loop:", e); }
+  }, 60 * 1000);
   console.log(`API listening on :${config.PORT}`);
 });
