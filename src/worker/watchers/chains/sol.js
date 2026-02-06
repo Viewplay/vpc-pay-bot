@@ -1,117 +1,120 @@
-﻿import { Connection, PublicKey } from "@solana/web3.js";
-import { config } from "../../../runtime/config.js";
-import { METHOD } from "../../../vpc/prices.js";
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+﻿/**
+ * Solana payment watcher (low-RPC, reliable).
+ * Detects inbound SOL by scanning recent txs and checking balance delta
+ * for the deposit address in the transaction meta (post - pre).
+ */
+const RPC_URL =
+  process.env.SOLANA_RPC_URL ||
+  process.env.RPC_ENDPOINT ||
+  "https://api.mainnet-beta.solana.com";
 
-function withinTolerance(received, expected) {
-  const tol = expected * (config.AMOUNT_TOLERANCE_PCT / 100);
-  return received + tol >= expected;
+const LAMPORTS_PER_SOL = 1_000_000_000;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-function isEnough(received, expected, minReceived) {
-  const minOk = Number.isFinite(minReceived) && minReceived > 0 ? received >= minReceived : false;
-  return withinTolerance(received, expected) || minOk;
-}
-function pickCommitment(status) {
-  if (status === "finalized") return "finalized";
-  return "confirmed";
-}
-
-function calcSolReceivedFromBalances(tx, depositBase58) {
-  const keys = tx?.transaction?.message?.accountKeys || [];
-  const idx = keys.findIndex((k) => {
-    const keyStr = typeof k === "string" ? k : (k?.pubkey?.toBase58?.() ?? k?.toBase58?.());
-    return keyStr === depositBase58;
-  });
-  if (idx < 0) return 0;
-
-  const pre = tx?.meta?.preBalances?.[idx] ?? 0;
-  const post = tx?.meta?.postBalances?.[idx] ?? 0;
-  const diff = Number(post) - Number(pre);
-  return diff > 0 ? diff / 1e9 : 0;
-}
-
-export async function checkSOL(order) {
-  if (!config.SOLANA_RPC_URL) throw new Error("Missing SOLANA_RPC_URL");
-
-  const conn = new Connection(config.SOLANA_RPC_URL, "confirmed");
-  const deposit = new PublicKey(order.deposit_address);
-  const deposit58 = deposit.toBase58();
-  const expected = Number(order.expected_crypto_amount);
-
-  // -------- SOL native --------
-  if (order.pay_method === METHOD.SOL) {
-    const sigs = await conn.getSignaturesForAddress(deposit, { limit: 50 }, "confirmed");
-
-    for (const s of sigs) {
-      const commitment = pickCommitment(s.confirmationStatus);
-
-      const tx = await conn.getTransaction(s.signature, {
-        commitment,
-        maxSupportedTransactionVersion: 0,
-      });
-      if (!tx) continue;
-
-      const received = calcSolReceivedFromBalances(tx, deposit58);
-      if (!isEnough(received, expected, Number(config.MIN_SOL_RECEIVED || 0))) continue;
-
-      return {
-        seen: true,
-        confirmed: commitment === "confirmed" || commitment === "finalized",
-        txid: s.signature,
-        received,
-        conf: 1,
-      };
-    }
-
-    return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
-  }
-
-  // -------- USDT on Solana (SPL token) --------
-  const usdtMint = new PublicKey(config.USDT_SOL_MINT);
-  const ata = getAssociatedTokenAddressSync(usdtMint, deposit, true);
-  const ata58 = ata.toBase58();
-
-  const sigs = await conn.getSignaturesForAddress(ata, { limit: 50 }, "confirmed");
-  for (const s of sigs) {
-    const commitment = pickCommitment(s.confirmationStatus);
-
-    const tx = await conn.getParsedTransaction(s.signature, {
-      commitment,
-      maxSupportedTransactionVersion: 0,
+async function solRpc(method, params) {
+  let delay = 500;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const res = await fetch(RPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "vpc", method, params }),
     });
-    if (!tx) continue;
 
-    const insAll = [
-      ...(tx.transaction.message.instructions || []),
-      ...((tx.meta?.innerInstructions || []).flatMap((x) => x.instructions || [])),
-    ];
+    const txt = await res.text();
 
-    for (const ins of insAll) {
-      if (ins.program !== "spl-token") continue;
-
-      const type = ins.parsed?.type;
-      const info = ins.parsed?.info;
-      if (!info) continue;
-
-      const dest = info.destination || info.account;
-      if (dest !== ata58) continue;
-      if (type !== "transfer" && type !== "transferChecked") continue;
-
-      const amountStr = info.tokenAmount?.uiAmountString ?? info.amount;
-      const received = Number(amountStr);
-      if (!Number.isFinite(received)) continue;
-      if (!isEnough(received, expected, Number(config.MIN_SOL_RECEIVED || 0))) continue;
-
-      return {
-        seen: true,
-        confirmed: commitment === "confirmed" || commitment === "finalized",
-        txid: s.signature,
-        received,
-        conf: 1,
-      };
+    if (res.status === 429) {
+      await sleep(delay);
+      delay = Math.min(delay * 2, 8000);
+      continue;
     }
+
+    let json;
+    try {
+      json = txt ? JSON.parse(txt) : {};
+    } catch {
+      throw new Error(`SOL RPC bad JSON: ${txt?.slice?.(0, 120) || ""}`);
+    }
+
+    if (!res.ok) {
+      throw new Error(`${res.status} ${res.statusText}: ${txt}`);
+    }
+    if (json?.error) {
+      const msg = typeof json.error === "string" ? json.error : JSON.stringify(json.error);
+      if (msg.includes("429")) {
+        await sleep(delay);
+        delay = Math.min(delay * 2, 8000);
+        continue;
+      }
+      throw new Error(`SOL RPC error: ${msg}`);
+    }
+    return json.result;
+  }
+  throw new Error("SOL RPC: too many 429 retries");
+}
+
+function keyToString(k) {
+  if (!k) return "";
+  if (typeof k === "string") return k;
+  if (typeof k === "object") return String(k.pubkey || k.toString?.() || "");
+  return String(k);
+}
+
+function findIndex(accountKeys, address) {
+  for (let i = 0; i < accountKeys.length; i++) {
+    if (keyToString(accountKeys[i]) === address) return i;
+  }
+  return -1;
+}
+
+/** Return: { seen:boolean, confirmed:boolean, received:number, txid:string|null } */
+export async function checkSOL(order) {
+  const address = String(order.deposit_address || "").trim();
+  const expectedSol = Number(order.expected_crypto_amount || 0);
+  const expectedLamports = Math.max(1, Math.round(expectedSol * LAMPORTS_PER_SOL));
+  const minSlot = order.start_block != null ? Number(order.start_block) : null;
+
+  if (!address) return { seen: false, confirmed: false, received: 0, txid: null };
+
+  const sigs = await solRpc("getSignaturesForAddress", [
+    address,
+    { limit: 10, commitment: "confirmed" },
+  ]);
+
+  for (const s of sigs || []) {
+    if (!s || s.err) continue;
+    if (minSlot != null && Number.isFinite(minSlot) && s.slot != null && s.slot < minSlot) {
+      break;
+    }
+
+    const tx = await solRpc("getTransaction", [
+      s.signature,
+      { encoding: "jsonParsed", commitment: "confirmed", maxSupportedTransactionVersion: 0 },
+    ]);
+
+    const pre = tx?.meta?.preBalances;
+    const post = tx?.meta?.postBalances;
+    const keys = tx?.transaction?.message?.accountKeys || [];
+
+    if (!Array.isArray(pre) || !Array.isArray(post) || pre.length !== post.length) continue;
+
+    const idx = findIndex(keys, address);
+    if (idx < 0 || idx >= pre.length) continue;
+
+    const diffLamports = Number(post[idx]) - Number(pre[idx]);
+    if (!Number.isFinite(diffLamports) || diffLamports <= 0) continue;
+
+    const received = diffLamports / LAMPORTS_PER_SOL;
+
+    return {
+      seen: true,
+      confirmed: diffLamports >= expectedLamports,
+      received,
+      txid: s.signature,
+    };
   }
 
-  return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
+  return { seen: false, confirmed: false, received: 0, txid: null };
 }
