@@ -1,13 +1,11 @@
-import Database from "better-sqlite3";
+﻿import Database from "better-sqlite3";
 
 export const db = new Database(process.env.SQLITE_PATH || "data.sqlite");
-
-// WAL améliore les perfs et évite des locks bizarres sur SQLite
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}// WAL amÃ©liore les perfs et Ã©vite des locks bizarres sur SQLite
 db.pragma("journal_mode = WAL");
-
-export function migrate() {
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}export function migrate() {
   db.exec(`
-    -- ✅ Pool d'adresses de dépôt (utilisé par addressPool.js)
+    -- âœ… Pool d'adresses de dÃ©pÃ´t (utilisÃ© par addressPool.js)
     CREATE TABLE IF NOT EXISTS deposit_addresses (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       method TEXT NOT NULL,
@@ -17,17 +15,13 @@ export function migrate() {
       reserved_until INTEGER,                -- timestamp ms
       last_used_at INTEGER                   -- timestamp ms
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_deposit_addresses_method_address
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}    CREATE UNIQUE INDEX IF NOT EXISTS idx_deposit_addresses_method_address
       ON deposit_addresses(method, address);
-
-    CREATE INDEX IF NOT EXISTS idx_deposit_addresses_status_method
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}    CREATE INDEX IF NOT EXISTS idx_deposit_addresses_status_method
       ON deposit_addresses(status, method);
-
-    CREATE INDEX IF NOT EXISTS idx_deposit_addresses_reserved_until
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}    CREATE INDEX IF NOT EXISTS idx_deposit_addresses_reserved_until
       ON deposit_addresses(reserved_until);
-
-    -- ✅ Orders
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}    -- âœ… Orders
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       status TEXT NOT NULL,
@@ -55,11 +49,9 @@ export function migrate() {
       fulfill_tx_sig TEXT,
       client_ping_at INTEGER
     );
-
-    CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-    CREATE INDEX IF NOT EXISTS idx_orders_expires ON orders(expires_at);
-
-    -- (Optionnel) ancien système "address_locks" -> on le garde pour ne rien casser
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}    CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}    CREATE INDEX IF NOT EXISTS idx_orders_expires ON orders(expires_at);
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}    -- (Optionnel) ancien systÃ¨me "address_locks" -> on le garde pour ne rien casser
     CREATE TABLE IF NOT EXISTS address_locks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       pay_method TEXT NOT NULL,
@@ -68,5 +60,5 @@ export function migrate() {
       locked_until INTEGER,
       UNIQUE(pay_method, address)
     );
-  `);
-}
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}  `);
+try { db.prepare("ALTER TABLE orders ADD COLUMN client_method TEXT").run(); } catch (e) {}}

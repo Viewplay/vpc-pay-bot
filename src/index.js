@@ -151,8 +151,8 @@ function normalizeMethod(input) {
   if (!v) return "";
 
   const lower = v.toLowerCase();
-
-  // Already correct values:
+  if (lower === "card") return "card";
+// Already correct values:
   if (
     lower === METHOD.BTC ||
     lower === METHOD.ETH ||
@@ -194,9 +194,8 @@ function normalizeMethod(input) {
     ETH: METHOD.ETH,
     SOL: METHOD.SOL,
     USDT_TRC20: METHOD.USDT_TRC20,
-    USDT_ERC20: METHOD.USDT_ERC20,
-    USDT_SOL: METHOD.USDT_SOL,
-  };
+    USDT_ERC20: METHOD.USDT_ERC20,    CARD: ""card""
+
 
   if (mapUpper[upper]) return mapUpper[upper];
   if (map[lower]) return map[lower];
@@ -213,9 +212,10 @@ const MethodSchema = z
       v === METHOD.SOL ||
       v === METHOD.USDT_TRC20 ||
       v === METHOD.USDT_ERC20 ||
-      v === METHOD.USDT_SOL,
+      v === METHOD.USDT_SOL ||
+      v === "card",
     {
-      message: `Invalid method. Expected one of: ${METHOD.BTC}, ${METHOD.ETH}, ${METHOD.SOL}, ${METHOD.USDT_TRC20}, ${METHOD.USDT_ERC20}, ${METHOD.USDT_SOL} (or aliases BTC/ETH/SOL/USDT_...)`,
+      message: `Invalid method. Expected one of: ${METHOD.BTC}, ${METHOD.ETH}, ${METHOD.SOL}, ${METHOD.USDT_TRC20}, ${METHOD.USDT_ERC20}, ${METHOD.USDT_SOL}, card (or aliases BTC/ETH/SOL/USDT_...)`,
     }
   );
 
@@ -396,8 +396,33 @@ const OrderCreateSchema = z.object({
   promoCode: z.string().optional().default(""),
 });
 
-function expiresInMs(method) { return 30 * 60 * 1000; }
+function expiresInMs(method) { return method === "card" ? 60 * 60 * 1000 : 30 * 60 * 1000; }
 
+function buildMoonPayUrl({ usd, walletAddress, orderId }) {
+  const base = process.env.MOONPAY_BASE_URL || "https://buy.moonpay.com";
+  const apiKey = process.env.MOONPAY_PUBLIC_KEY || "";
+  const secret = process.env.MOONPAY_SECRET_KEY || "";
+  if (!apiKey || !secret) throw new Error("Missing MOONPAY_PUBLIC_KEY or MOONPAY_SECRET_KEY");
+
+  const params = new URLSearchParams();
+  params.set("apiKey", apiKey);
+  params.set("currencyCode", "sol");
+  params.set("baseCurrencyCode", "usd");
+  params.set("baseCurrencyAmount", String(usd));
+  params.set("walletAddress", walletAddress);
+
+  // helps you identify the order in MoonPay dashboard/webhooks later
+  params.set("externalTransactionId", orderId);
+
+  const url = `${base}/?${params.toString()}`;
+
+  // MoonPay signature = HMAC-SHA256(secret, queryStringWithLeadingQuestionMark), base64
+  const crypto = require("crypto");
+  const signature = crypto.createHmac("sha256", secret).update(new URL(url).search).digest("base64");
+
+  // signature value must be URL-encoded
+  return `${url}&signature=${encodeURIComponent(signature)}`;
+}
 async function coingeckoPriceUSD(coingeckoId) {
   return await getUsdPrice(coingeckoId);
 }
@@ -415,42 +440,48 @@ app.post("/api/order", async (req, res) => {
       return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
     }
 
-    const { usd, payoutAddress, payMethod, promoCode } = parsed.data;
+        const { usd, payoutAddress, payMethod, promoCode } = parsed.data;
+
+    const clientMethod = payMethod;
+    const internalMethod = (clientMethod === "card") ? METHOD.SOL : clientMethod;
+
+    if (clientMethod === "card" && usd < 20) {
+      return res.status(400).json({ error: "Minimum amount for card is $20" });
+    }
 const promo = (promoCode || "").trim().toLowerCase();
     const discountRate = computeDiscountRate(usd, promo);
 
     const effectiveVpcPrice = config.VPC_PRICE_USD * (1 - discountRate);
     const vpcAmount = computeVpcAmount(usd, effectiveVpcPrice);
 
-    const { coingeckoId, currencyLabel } = priceForMethodUSD(payMethod);
+    const { coingeckoId, currencyLabel } = priceForMethodUSD(internalMethod);
     const priceUSD = await coingeckoPriceUSD(coingeckoId);
 
-    const cryptoDecimals = payMethod === METHOD.BTC ? 8 : 6;
+    const cryptoDecimals = internalMethod === METHOD.BTC ? 8 : 6;
     const expectedCryptoAmount = roundTo(usd / priceUSD, cryptoDecimals);
 
     const orderId = nanoid(12);
     const createdAt = Date.now();
-    const expiresAt = createdAt + expiresInMs(payMethod);
+    const expiresAt = createdAt + expiresInMs(clientMethod);
 
-    const depositAddress = reserveDepositAddress(db, payMethod, orderId, expiresAt);
+    const depositAddress = reserveDepositAddress(db, internalMethod, orderId, expiresAt);
     if (!depositAddress) {
       return res.status(503).json({ error: "No deposit addresses available (pool exhausted)" });
     }
 
     db.prepare(
       `INSERT INTO orders
-        (id, status, usd, pay_method, solana_address, promo_code, discount_rate, vpc_amount,
+        (id, status, usd, pay_method, client_method, solana_address, promo_code, discount_rate, vpc_amount,
          expected_crypto_amount, crypto_currency_label, deposit_address, created_at, expires_at,
          start_block, payment_seen, payment_confirmed, payment_txid, fulfill_tx_sig)
        VALUES
-        (@id, 'PENDING', @usd, @payMethod, @payoutAddress, @promoCode, @discountRate, @vpcAmount,
+        (@id, 'PENDING', @usd, @payMethod, @clientMethod, @payoutAddress, @promoCode, @discountRate, @vpcAmount,
          @expectedCryptoAmount, @currencyLabel, @depositAddress, @createdAt, @expiresAt,
          NULL, 0, 0, NULL, NULL)`
     ).run({
       id: orderId,
       usd,
-      payMethod,
-      payoutAddress,
+      payMethod: internalMethod,`r`n      clientMethod,`r`n      payoutAddress,
       promoCode: promo,
       discountRate,
       vpcAmount,
@@ -467,12 +498,9 @@ const promo = (promoCode || "").trim().toLowerCase();
       usd,
       discountRate,
       vpcAmount,
-      payMethod,
-      currencyLabel,
+      payMethod: clientMethod,`r`n      currencyLabel,
       depositAddress,
-      expectedCryptoAmount,
-      expiresAt,
-    });
+      expectedCryptoAmount, expiresAt, moonpayUrl });
   } catch (e) {
     console.error("❌ /api/order error:", e);
     return res.status(500).json({ error: "Server error", message: String(e?.message || e) });
@@ -499,7 +527,7 @@ app.patch("/api/order/:id", async (req, res) => {
     }
 
     const row = db.prepare(
-      `SELECT id, status, usd, pay_method, solana_address, promo_code, deposit_address
+      `SELECT id, status, usd, pay_method, client_method, solana_address, promo_code, deposit_address
        FROM orders WHERE id = ?`
     ).get(orderId);
 
@@ -509,7 +537,8 @@ app.patch("/api/order/:id", async (req, res) => {
     const nextUsd = (usd !== undefined) ? usd : row.usd;
     const nextPayout = (payoutAddress !== undefined) ? String(payoutAddress).trim() : String(row.solana_address || "").trim();
     const nextPromo = (promoCode !== undefined) ? String(promoCode).trim().toLowerCase() : String(row.promo_code || "").trim().toLowerCase();
-    const nextMethod = (payMethod !== undefined) ? String(payMethod).trim() : String(row.pay_method).trim();
+        const nextClientMethod = (payMethod !== undefined) ? String(payMethod).trim() : String(row.client_method || row.pay_method).trim();
+    const nextMethod = (nextClientMethod === "card") ? METHOD.SOL : nextClientMethod;
 
     // payout wallet must be Solana address (VPC receive)
     if (!isValidSolanaAddress(nextPayout)) {
@@ -560,7 +589,8 @@ app.patch("/api/order/:id", async (req, res) => {
     db.prepare(
       `UPDATE orders
        SET usd = ?,
-           pay_method = ?,
+            pay_method = ?,
+            client_method = ?,
            solana_address = ?,
            promo_code = ?,
            discount_rate = ?,
@@ -573,6 +603,7 @@ app.patch("/api/order/:id", async (req, res) => {
     ).run(
       nextUsd,
       nextMethod,
+      nextClientMethod,
       nextPayout,
       nextPromo,
       discountRate,
@@ -600,7 +631,7 @@ app.get("/api/order/:id", (req, res) => {
     orderId: row.id,
     status: row.status,
     usd: row.usd,
-    payMethod: row.pay_method,
+    payMethod: row.client_method || row.pay_method,
     payoutAddress: row.solana_address,
     discountRate: row.discount_rate,
     vpcAmount: row.vpc_amount,
