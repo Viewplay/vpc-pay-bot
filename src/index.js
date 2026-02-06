@@ -1,4 +1,5 @@
 ﻿import "dotenv/config";
+import crypto from "crypto";
 import express from "express";
 import helmet from "helmet";
 import { z } from "zod";
@@ -504,7 +505,12 @@ const promo = (promoCode || "").trim().toLowerCase();
       depositAddress,
       createdAt,
       expiresAt,
-    });
+    });    let moonpayUrl = null;
+    if (clientMethod === "card") {
+      moonpayUrl = buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId });
+    }
+
+
 
     return res.json({
       orderId,
@@ -561,7 +567,7 @@ app.patch("/api/order/:id", async (req, res) => {
     }
 
     const now = Date.now();
-    const expiresAt = now + expiresInMs(nextMethod);
+    const expiresAt = now + expiresInMs(nextClientMethod);
 
     // recompute prices + amounts
     const discountRate = computeDiscountRate(nextUsd, nextPromo);
