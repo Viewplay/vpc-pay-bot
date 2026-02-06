@@ -403,47 +403,106 @@ const promo = (promoCode || "").trim().toLowerCase();
 });
 
 /** Get order */
-app.patch("/api/order/:id", (req, res) => {
+app.patch("/api/order/:id", async (req, res) => {
   try {
     const orderId = String(req.params.id || "");
-    const { usd, payoutAddress, promoCode } = req.body || {};
+    const { usd, payoutAddress, promoCode, payMethod } = req.body || {};
 
-    if (usd !== undefined && (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0)) {
+    if (usd !== undefined && (typeof usd !== "number" || !Number.isFinite(usd) || usd < 1)) {
       return res.status(400).json({ ok: false, error: "Invalid usd" });
     }
-    if (payoutAddress !== undefined && (typeof payoutAddress !== "string" || payoutAddress.length < 32 || payoutAddress.length > 44)) {
+    if (payoutAddress !== undefined && typeof payoutAddress !== "string") {
       return res.status(400).json({ ok: false, error: "Invalid payoutAddress" });
     }
     if (promoCode !== undefined && typeof promoCode !== "string") {
       return res.status(400).json({ ok: false, error: "Invalid promoCode" });
     }
+    if (payMethod !== undefined && typeof payMethod !== "string") {
+      return res.status(400).json({ ok: false, error: "Invalid payMethod" });
+    }
 
-    const order = db.prepare(
+    const row = db.prepare(
       `SELECT id, status, usd, pay_method, solana_address, promo_code, deposit_address
        FROM orders WHERE id = ?`
     ).get(orderId);
 
-    if (!order) return res.status(404).json({ ok: false, error: "Order not found" });
-    if (order.status !== "PENDING") return res.status(409).json({ ok: false, error: "Order not editable" });
+    if (!row) return res.status(404).json({ ok: false, error: "Order not found" });
+    if (row.status !== "PENDING") return res.status(409).json({ ok: false, error: "Order not editable" });
+
+    const nextUsd = (usd !== undefined) ? usd : row.usd;
+    const nextPayout = (payoutAddress !== undefined) ? String(payoutAddress).trim() : String(row.solana_address || "").trim();
+    const nextPromo = (promoCode !== undefined) ? String(promoCode).trim().toLowerCase() : String(row.promo_code || "").trim().toLowerCase();
+    const nextMethod = (payMethod !== undefined) ? String(payMethod).trim() : String(row.pay_method).trim();
+
+    // payout wallet must be Solana address (VPC receive)
+    if (!isValidSolanaAddress(nextPayout)) {
+      return res.status(400).json({ ok: false, error: "Invalid payoutAddress (Solana)" });
+    }
 
     const now = Date.now();
-    const expiresAt = now + expiresInMs(order.pay_method);
+    const expiresAt = now + expiresInMs(nextMethod);
 
-    const nextUsd = (usd !== undefined) ? usd : order.usd;
-    const nextSol = (payoutAddress !== undefined) ? payoutAddress : order.solana_address;
-    const nextPromo = (promoCode !== undefined) ? String(promoCode).trim().toLowerCase() : order.promo_code;
+    // recompute prices + amounts
+    const discountRate = computeDiscountRate(nextUsd, nextPromo);
+    const effectiveVpcPrice = config.VPC_PRICE_USD * (1 - discountRate);
+    const vpcAmount = computeVpcAmount(nextUsd, effectiveVpcPrice);
+
+    const { coingeckoId, currencyLabel } = priceForMethodUSD(nextMethod);
+    const priceUSD = await coingeckoPriceUSD(coingeckoId);
+
+    const cryptoDecimals = nextMethod === METHOD.BTC ? 8 : 6;
+    const expectedCryptoAmount = roundTo(nextUsd / priceUSD, cryptoDecimals);
+
+    let depositAddress = row.deposit_address;
+
+    // if method changed => free old address and reserve a new one
+    if (String(row.pay_method) !== nextMethod) {
+      db.prepare(
+        `UPDATE deposit_addresses
+         SET status='FREE', reserved_by=NULL, reserved_until=NULL
+         WHERE method = ? AND address = ? AND reserved_by = ?`
+      ).run(row.pay_method, row.deposit_address, orderId);
+
+      const newAddr = reserveDepositAddress(db, nextMethod, orderId, expiresAt);
+      if (!newAddr) {
+        return res.status(503).json({ ok: false, error: "No deposit addresses available (pool exhausted)" });
+      }
+      depositAddress = newAddr;
+    } else {
+      // same method => just extend reservation timer
+      db.prepare(
+        `UPDATE deposit_addresses
+         SET reserved_until = ?
+         WHERE method = ? AND address = ? AND reserved_by = ?`
+      ).run(expiresAt, nextMethod, depositAddress, orderId);
+    }
 
     db.prepare(
       `UPDATE orders
-       SET usd = ?, solana_address = ?, promo_code = ?, expires_at = ?
+       SET usd = ?,
+           pay_method = ?,
+           solana_address = ?,
+           promo_code = ?,
+           discount_rate = ?,
+           vpc_amount = ?,
+           expected_crypto_amount = ?,
+           crypto_currency_label = ?,
+           deposit_address = ?,
+           expires_at = ?
        WHERE id = ?`
-    ).run(nextUsd, nextSol, nextPromo, expiresAt, orderId);
-
-    db.prepare(
-      `UPDATE deposit_addresses
-       SET reserved_until = ?
-       WHERE method = ? AND address = ? AND reserved_by = ?`
-    ).run(expiresAt, order.pay_method, order.deposit_address, orderId);
+    ).run(
+      nextUsd,
+      nextMethod,
+      nextPayout,
+      nextPromo,
+      discountRate,
+      vpcAmount,
+      expectedCryptoAmount,
+      currencyLabel,
+      depositAddress,
+      expiresAt,
+      orderId
+    );
 
     const updated = db.prepare(`SELECT * FROM orders WHERE id = ?`).get(orderId);
     return res.json({ ok: true, order: updated });
@@ -452,7 +511,6 @@ app.patch("/api/order/:id", (req, res) => {
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
-
 app.get("/api/order/:id", (req, res) => {
   const id = String(req.params.id || "");
   const row = db.prepare("SELECT * FROM orders WHERE id = ?").get(id);
