@@ -408,6 +408,67 @@ app.post("/api/order", async (req, res) => {
 });
 
 /** Get order */
+app.patch("/api/order/:id", async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const { usd, solanaAddress, promoCode } = req.body || {};
+
+    if (usd !== undefined && (typeof usd !== "number" || usd <= 0)) {
+      return res.status(400).json({ ok: false, error: "Invalid usd" });
+    }
+    if (solanaAddress !== undefined && typeof solanaAddress !== "string") {
+      return res.status(400).json({ ok: false, error: "Invalid solanaAddress" });
+    }
+    if (promoCode !== undefined && typeof promoCode !== "string") {
+      return res.status(400).json({ ok: false, error: "Invalid promoCode" });
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+
+    const order = await db.get(
+      `SELECT id, status, deposit_method, deposit_address, deposit_address_id
+       FROM orders WHERE id = ?`,
+      [orderId]
+    );
+
+    if (!order) return res.status(404).json({ ok: false, error: "Order not found" });
+    if (order.status !== "PENDING") {
+      return res.status(409).json({ ok: false, error: "Order not editable" });
+    }
+
+    await db.run(
+      `UPDATE orders
+       SET usd = COALESCE(?, usd),
+           solana_address = COALESCE(?, solana_address),
+           promo_code = COALESCE(?, promo_code),
+           expires_at = ?
+       WHERE id = ?`,
+      [usd ?? null, solanaAddress ?? null, promoCode ?? null, expiresAt, orderId]
+    );
+
+    if (order.deposit_address_id) {
+      await db.run(
+        `UPDATE deposit_addresses SET reserved_until = ? WHERE id = ?`,
+        [expiresAt, order.deposit_address_id]
+      );
+    } else {
+      await db.run(
+        `UPDATE deposit_addresses
+         SET reserved_until = ?
+         WHERE method = ? AND address = ?`,
+        [expiresAt, order.deposit_method, order.deposit_address]
+      );
+    }
+
+    const updated = await db.get(`SELECT * FROM orders WHERE id = ?`, [orderId]);
+    return res.json({ ok: true, order: updated });
+  } catch (e) {
+    console.error("❌ PATCH /api/order/:id error:", e);
+    return res.status(500).json({ ok: false, error: "Server error" });
+  }
+});
+
 app.get("/api/order/:id", (req, res) => {
   const id = String(req.params.id || "");
   const row = db.prepare("SELECT * FROM orders WHERE id = ?").get(id);
