@@ -19,7 +19,7 @@ function listPendingOrders(limit = 50) {
       `SELECT * FROM orders
        WHERE status='PENDING'
          AND expires_at >= ?
-       ORDER BY created_at ASC
+       ORDER BY created_at DESC
        LIMIT ?`
     )
     .all(Date.now(), limit);
