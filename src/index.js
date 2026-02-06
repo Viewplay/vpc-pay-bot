@@ -430,7 +430,7 @@ app.patch("/api/order/:id", (req, res) => {
     const expiresAt = now + expiresInMs(order.pay_method);
 
     const nextUsd = (usd !== undefined) ? usd : order.usd;
-    const nextSol = (payoutAddress !== undefined) ? solanaAddress : order.solana_address;
+    const nextSol = (payoutAddress !== undefined) ? payoutAddress : order.solana_address;
     const nextPromo = (promoCode !== undefined) ? String(promoCode).trim().toLowerCase() : order.promo_code;
 
     db.prepare(
