@@ -352,6 +352,24 @@ app.post("/api/admin/reset-method/:method", (req, res) => {
 
   return res.json({ ok: true, method, freed, expiredOrders });
 });
+/** Lookup order by deposit address (admin) */
+app.get("/api/admin/order-by-deposit/:address", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const address = String(req.params.address || "").trim();
+  const row = db.prepare(`
+    SELECT id, status, usd, pay_method, solana_address, promo_code, discount_rate, vpc_amount,
+           expected_crypto_amount, crypto_currency_label, deposit_address, created_at, expires_at,
+           payment_seen, payment_confirmed, payment_txid, fulfill_tx_sig
+    FROM orders
+    WHERE deposit_address = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(address);
+
+  if (!row) return res.status(404).json({ ok: false, error: "Not found" });
+  return res.json({ ok: true, order: row });
+});
 /** ===== Business endpoints ===== */
 
 const OrderCreateSchema = z.object({
