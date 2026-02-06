@@ -1,4 +1,4 @@
-import { db } from "../storage/db.js";
+﻿import { db } from "../storage/db.js";
 import { config } from "../runtime/config.js";
 import { releaseDepositAddress } from "../wallets/addressPool.js";
 import { checkPayment } from "./watchers/checkPayment.js";
@@ -68,7 +68,11 @@ export function startWorker() {
           }
         }
       } catch (e) {
-        console.error("Worker loop error:", e?.message || e);
+        const msg = String(e?.message || e);
+        console.error("Worker loop error:", msg);
+        if (msg.includes("429")) {
+          await sleep(15000);
+        }
       }
       await sleep(config.WORKER_INTERVAL_MS);
     }
