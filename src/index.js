@@ -307,6 +307,27 @@ app.post("/api/admin/release-expired", (req, res) => {
   return res.json({ ok: true, released });
 });
 
+/** Force-expire an order (admin) */
+app.post("/api/admin/expire-order/:id", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const id = String(req.params.id || "");
+  const now = Date.now();
+
+  const row = db.prepare(`SELECT id, status, pay_method, deposit_address FROM orders WHERE id = ?`).get(id);
+  if (!row) return res.status(404).json({ ok: false, error: "Not found" });
+
+  db.prepare(`UPDATE orders SET expires_at = ? WHERE id = ?`).run(now - 1, id);
+
+  db.prepare(`
+    UPDATE deposit_addresses
+    SET reserved_until = ?
+    WHERE method = ? AND address = ? AND reserved_by = ?
+  `).run(now - 1, row.pay_method, row.deposit_address, id);
+
+  const expired = expireOrders(db);
+  return res.json({ ok: true, expired });
+});
 /** ===== Business endpoints ===== */
 
 const OrderCreateSchema = z.object({
