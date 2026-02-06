@@ -11,6 +11,8 @@ import { config } from "./runtime/config.js";
 import { computeDiscountRate, computeVpcAmount } from "./vpc/pricing.js";
 import { isValidSolanaAddress } from "./vpc/solanaValidate.js";
 import { reserveDepositAddress, releaseDepositAddress } from "./wallets/addressPool.js";
+
+import { checkPayment } from "./worker/watchers/checkPayment.js";
 import { priceForMethodUSD, METHOD } from "./vpc/prices.js";
 import { startWorker } from "./worker/worker.js";
 import { getUsdPrice } from "./services/priceFeed.js";
@@ -369,6 +371,21 @@ app.get("/api/admin/order-by-deposit/:address", (req, res) => {
 
   if (!row) return res.status(404).json({ ok: false, error: "Not found" });
   return res.json({ ok: true, order: row });
+});
+/** Check payment for an order once (admin) */
+app.get("/api/admin/check-payment/:id", async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const id = String(req.params.id || "");
+  const order = db.prepare(`SELECT * FROM orders WHERE id = ?`).get(id);
+  if (!order) return res.status(404).json({ ok: false, error: "Not found" });
+
+  try {
+    const result = await checkPayment(order);
+    return res.json({ ok: true, result });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
 });
 /** ===== Business endpoints ===== */
 
