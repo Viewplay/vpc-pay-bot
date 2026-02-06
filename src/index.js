@@ -412,29 +412,9 @@ const OrderCreateSchema = z.object({
 function expiresInMs(method) { return method === "card" ? 60 * 60 * 1000 : 30 * 60 * 1000; }
 
 function buildMoonPayUrl({ usd, walletAddress, orderId }) {
-  const base = process.env.MOONPAY_BASE_URL || "https://buy.moonpay.com";
-  const apiKey = process.env.MOONPAY_PUBLIC_KEY || "";
-  const secret = process.env.MOONPAY_SECRET_KEY || "";
-  if (!apiKey || !secret) throw new Error("Missing MOONPAY_PUBLIC_KEY or MOONPAY_SECRET_KEY");
-
-  const params = new URLSearchParams();
-  params.set("apiKey", apiKey);
-  params.set("currencyCode", "sol");
-  params.set("baseCurrencyCode", "usd");
-  params.set("baseCurrencyAmount", String(usd));
-  params.set("walletAddress", walletAddress);
-
-  // helps you identify the order in MoonPay dashboard/webhooks later
-  params.set("externalTransactionId", orderId);
-
-  const url = `${base}/?${params.toString()}`;
-
-  // MoonPay signature = HMAC-SHA256(secret, queryStringWithLeadingQuestionMark), base64
-  const crypto = require("crypto");
-  const signature = crypto.createHmac("sha256", secret).update(new URL(url).search).digest("base64");
-
-  // signature value must be URL-encoded
-  return `${url}&signature=${encodeURIComponent(signature)}`;
+  // No MoonPay keys: we only give a generic link + user will manually paste address + amount.
+  // Keep walletAddress/orderId in the API response for instructions.
+  return "https://www.moonpay.com/buy";
 }
 async function coingeckoPriceUSD(coingeckoId) {
   return await getUsdPrice(coingeckoId);
