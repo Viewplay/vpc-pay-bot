@@ -51,7 +51,7 @@ export function startWorker() {
         markExpired();
         releaseDepositAddress(db);
 
-        const pending = listPendingOrders(100);
+        const pending = listPendingOrders(10);
         for (const order of pending) {
           const current = db.prepare(`SELECT * FROM orders WHERE id=?`).get(order.id);
           if (!current || current.status !== "PENDING" || Number(current.expires_at || 0) < Date.now()) continue;
