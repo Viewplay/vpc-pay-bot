@@ -1,4 +1,4 @@
-import { ethers } from "ethers";
+﻿import { ethers } from "ethers";
 import { config } from "../../../runtime/config.js";
 import { METHOD } from "../../../vpc/prices.js";
 import { db } from "../../../storage/db.js";
@@ -18,7 +18,7 @@ async function ensureStartBlock(order, provider) {
 }
 
 export async function checkETH(order) {
-  if (!config.ETH_RPC_URL) throw new Error("Missing ETH_RPC_URL");
+  if (!config.ETH_RPC_URL) return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
   const provider = new ethers.JsonRpcProvider(config.ETH_RPC_URL);
 
   const address = ethers.getAddress(order.deposit_address);
