@@ -85,6 +85,12 @@ export async function checkSOL(order) {
 
   for (const s of sigs || []) {
     if (!s || s.err) continue;
+
+    // ignore tx older than order creation time (prevents auto-confirm when address reused)
+    const createdAtSec = Math.floor(Number(order.created_at || order.createdAt || 0) / 1000);
+    if (Number.isFinite(createdAtSec) && createdAtSec > 0 && Number.isFinite(s.blockTime) && s.blockTime < createdAtSec) {
+      continue;
+    }
     if (minSlot != null && Number.isFinite(minSlot) && s.slot != null && s.slot < minSlot) {
       break;
     }
