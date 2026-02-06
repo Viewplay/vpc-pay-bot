@@ -56,7 +56,14 @@ export function startWorker() {
           const current = db.prepare(`SELECT * FROM orders WHERE id=?`).get(order.id);
           if (!current || current.status !== "PENDING" || Number(current.expires_at || 0) < Date.now()) continue;
 
-          const result = await checkPayment(current);
+          let result;
+          try {
+            result = await checkPayment(current);
+          } catch (e) {
+            const msg = String(e?.message || e);
+            console.error(`Order ${current.id} checkPayment error: ${msg}`);
+            continue;
+          }
 
           
           await sleep(250);
@@ -74,10 +81,18 @@ if (result.seen && !current.payment_seen) updateSeen(current.id, result.txid || 
               vpcToSend = Math.max(1, Math.floor(vpcToSend * ratio));
             }
 
-            const sig = await sendVPC({
+            let sig;
+            try {
+              sig = await sendVPC({
               solanaRecipient: fresh.solana_address,
               vpcAmount: vpcToSend
             });
+            } catch (e) {
+              const msg = String(e?.message || e);
+              console.error(`Order ${fresh.id} sendVPC error: ${msg}`);
+              db.prepare("UPDATE orders SET status='FAILED' WHERE id=?").run(fresh.id);
+              continue;
+            }
             markFulfilled(fresh.id, sig);
             console.log(`FULFILLED order=${fresh.id} sig=${sig}`);
           }
