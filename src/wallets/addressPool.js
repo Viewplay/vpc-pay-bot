@@ -38,6 +38,38 @@ export function reserveDepositAddress(db, method, orderId, expiresAt) {
   if (upd.changes !== 1) return null;
   return row.address;
 }
+export function getOrReserveDepositAddress(db, method, orderId, expiresAt) {
+  const now = Date.now();
+
+  const existing = db.prepare(`
+    SELECT address
+    FROM deposit_addresses
+    WHERE method = ?
+      AND status = 'RESERVED'
+      AND reserved_by = ?
+      AND reserved_until IS NOT NULL
+      AND reserved_until > ?
+    ORDER BY id ASC
+    LIMIT 1
+  `).get(method, orderId, now);
+
+  if (existing?.address) {
+    db.prepare(`
+      UPDATE deposit_addresses
+      SET reserved_until = ?,
+          last_used_at = ?
+      WHERE method = ?
+        AND address = ?
+        AND status = 'RESERVED'
+        AND reserved_by = ?
+    `).run(expiresAt, now, method, existing.address, orderId);
+
+    return existing.address;
+  }
+
+  return reserveDepositAddress(db, method, orderId, expiresAt);
+}
+
 
 export function markAddressInFlight(db, method, address, orderId, expiresAt) {
   const now = Date.now();

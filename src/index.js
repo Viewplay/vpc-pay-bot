@@ -10,7 +10,7 @@ import { db, migrate } from "./storage/db.js";
 import { config } from "./runtime/config.js";
 import { computeDiscountRate, computeVpcAmount } from "./vpc/pricing.js";
 import { isValidSolanaAddress } from "./vpc/solanaValidate.js";
-import { reserveDepositAddress, releaseDepositAddress } from "./wallets/addressPool.js";
+import { reserveDepositAddress, releaseDepositAddress, getOrReserveDepositAddress } from "./wallets/addressPool.js";
 
 import { checkPayment } from "./worker/watchers/checkPayment.js";
 import { priceForMethodUSD, METHOD } from "./vpc/prices.js";
@@ -534,13 +534,16 @@ app.patch("/api/order/:id", async (req, res) => {
 
     // if method changed => free old address and reserve a new one
     if (String(row.pay_method) !== nextMethod) {
-      db.prepare(
-        `UPDATE deposit_addresses
-         SET status='FREE', reserved_by=NULL, reserved_until=NULL
-         WHERE method = ? AND address = ? AND reserved_by = ?`
-      ).run(row.pay_method, row.deposit_address, orderId);
+      // Keep the old reservation for 30min (do NOT free), so switching back reuses the same address.
+      try {
+        db.prepare(
+          `UPDATE deposit_addresses
+           SET reserved_until = ?
+           WHERE method = ? AND address = ? AND status='RESERVED' AND reserved_by = ?`
+        ).run(expiresAt, row.pay_method, row.deposit_address, orderId);
+      } catch {}
 
-      const newAddr = reserveDepositAddress(db, nextMethod, orderId, expiresAt);
+      const newAddr = getOrReserveDepositAddress(db, nextMethod, orderId, expiresAt);
       if (!newAddr) {
         return res.status(503).json({ ok: false, error: "No deposit addresses available (pool exhausted)" });
       }
