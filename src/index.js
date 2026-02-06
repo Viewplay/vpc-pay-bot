@@ -190,12 +190,13 @@ function normalizeMethod(input) {
   // Also support uppercase enums like "USDT_TRC20"
   const upper = v.toUpperCase();
   const mapUpper = {
-    BTC: METHOD.BTC,
+BTC: METHOD.BTC,
     ETH: METHOD.ETH,
     SOL: METHOD.SOL,
     USDT_TRC20: METHOD.USDT_TRC20,
-    USDT_ERC20: METHOD.USDT_ERC20,    CARD: ""card""
-
+    USDT_ERC20: METHOD.USDT_ERC20,
+    USDT_SOL: METHOD.USDT_SOL,
+  };
 
   if (mapUpper[upper]) return mapUpper[upper];
   if (map[lower]) return map[lower];
@@ -481,7 +482,9 @@ const promo = (promoCode || "").trim().toLowerCase();
     ).run({
       id: orderId,
       usd,
-      payMethod: internalMethod,`r`n      clientMethod,`r`n      payoutAddress,
+      payMethod: internalMethod,
+      clientMethod,
+      payoutAddress,
       promoCode: promo,
       discountRate,
       vpcAmount,
@@ -498,7 +501,8 @@ const promo = (promoCode || "").trim().toLowerCase();
       usd,
       discountRate,
       vpcAmount,
-      payMethod: clientMethod,`r`n      currencyLabel,
+      payMethod: clientMethod,
+      currencyLabel,
       depositAddress,
       expectedCryptoAmount, expiresAt, moonpayUrl });
   } catch (e) {
