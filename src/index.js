@@ -328,6 +328,30 @@ app.post("/api/admin/expire-order/:id", (req, res) => {
   const expired = expireOrders(db);
   return res.json({ ok: true, expired });
 });
+/** Reset pool + expire pending orders for a method (admin) */
+app.post("/api/admin/reset-method/:method", (req, res) => {
+  if (!requireAdmin(req, res)) return;
+
+  const parsed = MethodSchema.safeParse(String(req.params.method || ""));
+  if (!parsed.success) return res.status(400).json({ ok: false, error: "Invalid method" });
+  const method = parsed.data;
+
+  const now = Date.now();
+
+  const freed = db.prepare(`
+    UPDATE deposit_addresses
+    SET status='FREE', reserved_by=NULL, reserved_until=NULL
+    WHERE method = ?
+  `).run(method).changes;
+
+  const expiredOrders = db.prepare(`
+    UPDATE orders
+    SET status='EXPIRED', expires_at=?
+    WHERE status='PENDING' AND pay_method=?
+  `).run(now - 1, method).changes;
+
+  return res.json({ ok: true, method, freed, expiredOrders });
+});
 /** ===== Business endpoints ===== */
 
 const OrderCreateSchema = z.object({
