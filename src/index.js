@@ -438,8 +438,8 @@ app.post("/api/order", async (req, res) => {
     const clientMethod = payMethod;
     const internalMethod = (clientMethod === "card") ? METHOD.SOL : clientMethod;
 
-    if (clientMethod === "card" && usd < 20) {
-      return res.status(400).json({ error: "Minimum amount for card is $20" });
+    if (clientMethod === "card" && usd < 1) {
+      return res.status(400).json({ error: "Minimum amount for card is \$1" });
     }
 const promo = (promoCode || "").trim().toLowerCase();
     const discountRate = computeDiscountRate(usd, promo);
