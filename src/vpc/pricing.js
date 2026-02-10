@@ -1,7 +1,7 @@
 const PROMO_CODES = {
   viewplay10: 0.10,
-  testpro1: 0.10,
-  testpro2: 0.10,
+  testpro1: 0.1,
+  testpro2: 0.8,
   testpro3: 0.10,
   testpro4: 0.10,
   testpro5: 0.10,
