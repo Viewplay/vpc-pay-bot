@@ -1,15 +1,20 @@
 const PROMO_CODES = {
-  viewplay10: 0.10,
-  test1: 0.01,
-  testpro2: 0.08,
-  testpro3: 0.10,
-  testpro4: 0.10,
-  testpro5: 0.10,
-  testpro6: 0.10,
-  testpro7: 0.10,
-  testpro8: 0.10,
-  testpro9: 0.10,
-  testpro10: 0.10
+  viewplay10: { rate: 0.10, name: "ViewPlay" },
+  test1: { rate: 0.01, name: "Test" },
+  testpro2: { rate: 0.08, name: "TestPro2" },
+  testpro3: { rate: 0.10, name: "TestPro3" },
+  testpro4: { rate: 0.10, name: "TestPro4" },
+  testpro5: { rate: 0.10, name: "TestPro5" },
+  testpro6: { rate: 0.10, name: "TestPro6" },
+  testpro7: { rate: 0.10, name: "TestPro7" },
+  testpro8: { rate: 0.10, name: "TestPro8" },
+  testpro9: { rate: 0.10, name: "TestPro9" },
+  testpro10: { rate: 0.10, name: "TestPro10" },
+
+  // Codes des parrains (mais intégrés comme promo)
+  alex93: { rate: 0.05, name: "Alex93" },
+  nico67: { rate: 0.05, name: "Nico67" },
+  fafa203: { rate: 0.05, name: "Fafa203" }
 };
 
 function volumeDiscount(usd) {
@@ -20,10 +25,18 @@ function volumeDiscount(usd) {
   return 0;
 }
 
-function promoDiscount(code) {
+export function getPromoData(code) {
   const c = (code || "").trim().toLowerCase();
-  if (!c) return 0;
-  return PROMO_CODES[c] || 0;
+  if (!c) return { rate: 0, name: null };
+
+  const promo = PROMO_CODES[c];
+  if (!promo) return { rate: 0, name: null };
+
+  return promo;
+}
+
+function promoDiscount(code) {
+  return getPromoData(code).rate;
 }
 
 export function computeDiscountRate(usd, promoCode) {
