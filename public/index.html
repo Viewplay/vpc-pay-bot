@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -48,7 +48,7 @@ button{font-weight:bold;}
         <img id="ddIcon" src="https://cryptologos.cc/logos/bitcoin-btc-logo.png" alt="BTC">
         <span id="ddText">BTC</span>
       </span>
-      <span>▾</span>
+      <span>â–¾</span>
     </button>
     <div class="dd-list" id="ddList"></div>
   </div>
@@ -92,7 +92,7 @@ button{font-weight:bold;}
 
 <script>
 /** SET THIS TO YOUR RENDER BACKEND URL */
-const API_BASE = "https://vpc-bot.onrender.com";
+const API_BASE = "https://vpc-pay-bot.onrender.com";
 
 /* Dropdown */
 const METHODS=[
@@ -200,21 +200,21 @@ function startPolling(){
       if(o.status==="FULFILLED"){
         stopPolling();
         document.getElementById("cryptoPrice").innerHTML =
-          `<strong>Status:</strong> ✅ Confirmed & VPC sent<br><small>${o.fulfillTxSignature||""}</small>`;
+          `<strong>Status:</strong> âœ… Confirmed & VPC sent<br><small>${o.fulfillTxSignature||""}</small>`;
       }else if(o.status==="PAID"){
         document.getElementById("cryptoPrice").innerHTML =
-          `<strong>Status:</strong> Payment confirmed… sending VPC`;
+          `<strong>Status:</strong> Payment confirmedâ€¦ sending VPC`;
       }else if(o.status==="EXPIRED"){
         stopPolling();
         document.getElementById("cryptoPrice").innerHTML =
-          `<strong>Status:</strong> ❌ Expired. Please generate again.`;
+          `<strong>Status:</strong> âŒ Expired. Please generate again.`;
       }else if(o.status==="FAILED"){
         stopPolling();
         document.getElementById("cryptoPrice").innerHTML =
-          `<strong>Status:</strong> ❌ Failed. Contact support.`;
+          `<strong>Status:</strong> âŒ Failed. Contact support.`;
       }else{
         document.getElementById("cryptoPrice").innerHTML =
-          `<strong>Status:</strong> Waiting for payment confirmation…`;
+          `<strong>Status:</strong> Waiting for payment confirmationâ€¦`;
       }
     }catch(_e){}
   }, 5000);
@@ -281,3 +281,4 @@ function copyText(id){
 </script>
 </body>
 </html>
+
