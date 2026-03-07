@@ -24,6 +24,7 @@ function loadRegistry() {
 export function getPromoByCode(code) {
   const c = String(code || "").trim().toUpperCase();
   if (!c) return null;
+
   const reg = loadRegistry();
   const v = reg[c];
   if (!v || typeof v !== "object") return null;
@@ -32,10 +33,23 @@ export function getPromoByCode(code) {
   const chatId = String(v.chatId || "").trim();
   const discountPct = Number(v.discountPct || 0);
 
-  return { code: c, name, chatId, discountPct: Number.isFinite(discountPct) ? discountPct : 0 };
+  return {
+    code: c,
+    name,
+    chatId,
+    discountPct: Number.isFinite(discountPct) ? discountPct : 0
+  };
 }
 
 export function getDiscountPct(code) {
   const p = getPromoByCode(code);
   return p ? p.discountPct : 0;
+}
+
+/**
+ * ✅ Compatibility export used by worker.js
+ * worker.js imports: { getPromoInfo } from "../services/promoRegistry.js"
+ */
+export function getPromoInfo(code) {
+  return getPromoByCode(code);
 }
