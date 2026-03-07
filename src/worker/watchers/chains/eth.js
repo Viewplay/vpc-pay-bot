@@ -1,13 +1,10 @@
 // src/worker/watchers/chains/eth.js
 import { config } from "../../../runtime/config.js";
+import { METHOD } from "../../../vpc/prices.js";
 
-function toWeiFromEthNumber(eth) {
-  return BigInt(Math.round(Number(eth) * 1e18));
-}
-
-function pctTolerance(expectedWei, pct) {
-  const p = Number.isFinite(pct) ? pct : 0.5;
-  return (expectedWei * BigInt(Math.round(p * 100))) / BigInt(10000);
+function withinTolerance(received, expected) {
+  const tol = expected * (config.AMOUNT_TOLERANCE_PCT / 100);
+  return received + tol >= expected;
 }
 
 async function fetchJson(url) {
@@ -19,63 +16,125 @@ async function fetchJson(url) {
   return j;
 }
 
-export async function checkEthPayment({
-  depositAddress,
-  expectedEth,
-  createdAtMs,
-  minConfirmations = 1,
-  tolerancePct = 0.5,
-}) {
-  const addr = String(depositAddress || "").trim();
-  if (!addr || !addr.startsWith("0x")) {
+function getEtherscanBase() {
+  return (process.env.ETHERSCAN_BASE || "https://api.etherscan.io/api").trim();
+}
+
+function getEtherscanKey() {
+  const k = (process.env.ETHERSCAN_API_KEY || "").trim();
+  if (!k) throw new Error("ETHERSCAN_API_KEY missing (required for ETH/USDT ERC20 detection).");
+  return k;
+}
+
+/**
+ * REQUIRED export for existing code:
+ * checkPayment.js imports { checkETH } from "./chains/eth.js"
+ */
+export async function checkETH(order) {
+  const method = String(order.pay_method || order.client_method || "").trim();
+  const deposit = String(order.deposit_address || "").trim();
+  const expected = Number(order.expected_crypto_amount);
+
+  if (!deposit || !Number.isFinite(expected) || expected <= 0) {
     return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
   }
 
-  const apiKey = (process.env.ETHERSCAN_API_KEY || "").trim();
-  if (!apiKey) throw new Error("ETHERSCAN_API_KEY missing (required for ETH native detection).");
+  const apiKey = getEtherscanKey();
+  const base = getEtherscanBase();
 
-  const base = (process.env.ETHERSCAN_BASE || "https://api.etherscan.io/api").trim();
-  const url =
-    `${base}?module=account&action=txlist&address=${addr}` +
-    `&startblock=0&endblock=99999999&sort=desc&apikey=${encodeURIComponent(apiKey)}`;
+  const createdAtMs = Number(order.created_at || 0);
+  const createdAtSec = Math.floor(createdAtMs / 1000);
 
-  const data = await fetchJson(url);
-  if (data.status !== "1" && data.message !== "OK") {
-    if (String(data.message || "").toLowerCase().includes("no transactions")) {
-      return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
+  // ========= Native ETH (txlist) =========
+  if (method === METHOD.ETH || method === "ethereum") {
+    const url =
+      `${base}?module=account&action=txlist&address=${deposit}` +
+      `&startblock=0&endblock=99999999&sort=desc&apikey=${encodeURIComponent(apiKey)}`;
+
+    const data = await fetchJson(url);
+
+    if (data.status !== "1" && data.message !== "OK") {
+      const msg = String(data.message || "").toLowerCase();
+      if (msg.includes("no transactions")) return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
+      throw new Error(`Etherscan txlist error: ${data.message || "unknown"}`);
     }
-    throw new Error(`Etherscan error: ${data.message || "unknown"}`);
+
+    const txs = Array.isArray(data.result) ? data.result : [];
+    const depLower = deposit.toLowerCase();
+
+    for (const tx of txs) {
+      const to = String(tx.to || "").toLowerCase();
+      if (to !== depLower) continue;
+
+      const isError = String(tx.isError || "0") === "1";
+      const status = String(tx.txreceipt_status || "1");
+      if (isError || status === "0") continue;
+
+      const timeSec = Number(tx.timeStamp || 0);
+      if (timeSec && createdAtSec && timeSec + 5 < createdAtSec) continue;
+
+      const received = Number(tx.value || 0) / 1e18;
+      if (!withinTolerance(received, expected)) continue;
+
+      const conf = Number(tx.confirmations || 0);
+      return {
+        seen: true,
+        confirmed: conf >= 1,
+        txid: String(tx.hash || null),
+        received,
+        conf,
+      };
+    }
+
+    return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
   }
 
-  const txs = Array.isArray(data.result) ? data.result : [];
-  const expectedWei = toWeiFromEthNumber(expectedEth);
-  const tolWei = pctTolerance(expectedWei, tolerancePct);
-  const createdAtSec = Math.floor(Number(createdAtMs || 0) / 1000);
+  // ========= USDT ERC20 (tokentx) =========
+  // order.pay_method is expected to be METHOD.USDT_ERC20 (from your existing code)
+  if (method === METHOD.USDT_ERC20 || method === "usdt_erc20") {
+    const contract = String(config.USDT_ERC20_CONTRACT || "").trim();
+    if (!contract) throw new Error("USDT_ERC20_CONTRACT missing in config.");
 
-  for (const tx of txs) {
-    const to = String(tx.to || "").toLowerCase();
-    const isError = String(tx.isError || "0") === "1";
-    const status = String(tx.txreceipt_status || "1");
-    const timeSec = Number(tx.timeStamp || 0);
+    const url =
+      `${base}?module=account&action=tokentx&contractaddress=${contract}` +
+      `&address=${deposit}&page=1&offset=100&sort=desc&apikey=${encodeURIComponent(apiKey)}`;
 
-    if (to !== addr.toLowerCase()) continue;
-    if (timeSec && createdAtSec && timeSec + 5 < createdAtSec) continue;
-    if (isError || status === "0") continue;
+    const data = await fetchJson(url);
 
-    const valueWei = BigInt(String(tx.value || "0"));
-    const diff = valueWei > expectedWei ? valueWei - expectedWei : expectedWei - valueWei;
-    if (diff > tolWei) continue;
+    if (data.status !== "1" && data.message !== "OK") {
+      const msg = String(data.message || "").toLowerCase();
+      if (msg.includes("no transactions")) return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
+      throw new Error(`Etherscan tokentx error: ${data.message || "unknown"}`);
+    }
 
-    const conf = Number(tx.confirmations || 0);
-    const confirmed = conf >= Number(minConfirmations || 1);
+    const txs = Array.isArray(data.result) ? data.result : [];
+    const depLower = deposit.toLowerCase();
 
-    return {
-      seen: true,
-      confirmed,
-      txid: String(tx.hash || null),
-      received: Number(valueWei) / 1e18,
-      conf,
-    };
+    for (const tx of txs) {
+      const to = String(tx.to || "").toLowerCase();
+      if (to !== depLower) continue;
+
+      const timeSec = Number(tx.timeStamp || 0);
+      if (timeSec && createdAtSec && timeSec + 5 < createdAtSec) continue;
+
+      const isError = String(tx.isError || "0") === "1";
+      if (isError) continue;
+
+      const decimals = Number(tx.tokenDecimal || 6);
+      const received = Number(tx.value || 0) / Math.pow(10, decimals);
+      if (!withinTolerance(received, expected)) continue;
+
+      const conf = Number(tx.confirmations || 0);
+      return {
+        seen: true,
+        confirmed: conf >= 1,
+        txid: String(tx.hash || null),
+        received,
+        conf,
+      };
+    }
+
+    return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
   }
 
   return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
