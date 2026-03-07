@@ -1,173 +1,41 @@
-// src/worker/worker.js
-import { db } from "../storage/db.js";
-import { config } from "../runtime/config.js";
-import { releaseDepositAddress } from "../wallets/addressPool.js";
-import { checkPayment } from "./watchers/checkPayment.js";
-import { sendVPC } from "./solana/sendVpc.js";
-
-import { sendTelegramMessage } from "../services/telegram.js";
-import { getPromoInfo } from "../services/promoRegistry.js";
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+﻿function safeParseJson(s) {
+  try { return JSON.parse(s); } catch { return null; }
 }
 
-function markExpired() {
-  const now = Date.now();
-  db.prepare(`UPDATE orders SET status='EXPIRED' WHERE status='PENDING' AND expires_at < ?`).run(now);
+let _cache = null;
+
+function loadRegistry() {
+  if (_cache) return _cache;
+
+  // You will set this on Render as one JSON string:
+  // PROMO_REGISTRY_JSON = {"ERIC10":{"name":"Eric","chatId":"7826360898","discountPct":4}}
+  const raw = (process.env.PROMO_REGISTRY_JSON || "").trim();
+  const obj = raw ? safeParseJson(raw) : null;
+
+  _cache = (obj && typeof obj === "object") ? obj : {};
+  return _cache;
 }
 
-function listPendingOrders(limit = 50) {
-  return db
-    .prepare(
-      `SELECT * FROM orders
-       WHERE status='PENDING'
-         AND expires_at >= ?
-       ORDER BY created_at DESC
-       LIMIT ?`
-    )
-    .all(Date.now(), limit);
+/**
+ * Returns promo entry by code.
+ * Example entry:
+ * { name: "Eric", chatId: "7826360898", discountPct: 4 }
+ */
+export function getPromoByCode(code) {
+  const c = String(code || "").trim().toUpperCase();
+  if (!c) return null;
+  const reg = loadRegistry();
+  const v = reg[c];
+  if (!v || typeof v !== "object") return null;
+
+  const name = String(v.name || "").trim() || c;
+  const chatId = String(v.chatId || "").trim();
+  const discountPct = Number(v.discountPct || 0);
+
+  return { code: c, name, chatId, discountPct: Number.isFinite(discountPct) ? discountPct : 0 };
 }
 
-function updateSeen(id, txid) {
-  db.prepare(
-    `UPDATE orders SET payment_seen=1, payment_txid=COALESCE(payment_txid, ?)
-     WHERE id=?`
-  ).run(txid || null, id);
-}
-
-function updateConfirmed(id, txid) {
-  db.prepare(
-    `UPDATE orders SET payment_seen=1, payment_confirmed=1, payment_txid=COALESCE(payment_txid, ?), status='PAID'
-     WHERE id=?`
-  ).run(txid || null, id);
-}
-
-function markFulfilled(id, sig) {
-  db.prepare(`UPDATE orders SET status='FULFILLED', fulfill_tx_sig=? WHERE id=?`).run(sig, id);
-}
-
-function formatUsd(n) {
-  const x = Number(n || 0);
-  return `$${x.toFixed(2)}`;
-}
-
-async function notifyTelegram({ order, vpcSent }) {
-  const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
-  const adminChatId = String(process.env.TELEGRAM_ADMIN_CHAT_ID || "").trim();
-
-  // If not configured, do nothing
-  if (!token || !adminChatId) return;
-
-  const promoCode = String(order.promo_code || "").trim();
-  const promo = promoCode ? getPromoInfo(promoCode) : null;
-
-  const lines = [
-    "✅ New purchase (VPC)",
-    `Order: ${order.id}`,
-    `USD: ${formatUsd(order.usd)}`,
-    `VPC: ${Number(vpcSent || 0).toLocaleString()}`,
-    `Method: ${order.pay_method}`,
-    promoCode ? `Promo: ${promoCode} (${promo?.name || "Unknown"})` : "Promo: none",
-    order.payment_txid ? `PayTx: ${order.payment_txid}` : null,
-    order.fulfill_tx_sig ? `VPC Tx: ${order.fulfill_tx_sig}` : null,
-  ].filter(Boolean);
-
-  const adminMsg = lines.join("\n");
-
-  // 1) Admin message (you)
-  await sendTelegramMessage({ token, chatId: adminChatId, text: adminMsg });
-
-  // 2) Referrer message (Eric/Sabrina/Samy…) if promo exists
-  if (promo?.chatId && promo.chatId !== "0") {
-    const refMsg = [
-      "🎉 Your referral purchased VPC!",
-      `Name: ${promo.name}`,
-      `Promo: ${promo.code}`,
-      `USD: ${formatUsd(order.usd)}`,
-      `VPC: ${Number(vpcSent || 0).toLocaleString()}`,
-      `Method: ${order.pay_method}`,
-    ].join("\n");
-
-    await sendTelegramMessage({ token, chatId: promo.chatId, text: refMsg });
-  }
-}
-
-export function startWorker() {
-  (async () => {
-    console.log("Worker started");
-    while (true) {
-      try {
-        markExpired();
-        releaseDepositAddress(db);
-
-        const pending = listPendingOrders(10);
-        for (const order of pending) {
-          const current = db.prepare(`SELECT * FROM orders WHERE id=?`).get(order.id);
-          if (!current || current.status !== "PENDING" || Number(current.expires_at || 0) < Date.now()) continue;
-
-          let result;
-          try {
-            result = await checkPayment(current);
-          } catch (e) {
-            const msg = String(e?.message || e);
-            console.error(`Order ${current.id} checkPayment error: ${msg}`);
-            continue;
-          }
-
-          await sleep(250);
-
-          if (result.seen && !current.payment_seen) updateSeen(current.id, result.txid || null);
-
-          if (result.confirmed && current.status === "PENDING") {
-            updateConfirmed(current.id, result.txid || null);
-
-            const fresh = db.prepare(`SELECT * FROM orders WHERE id=?`).get(current.id) || current;
-            const expected = Number(fresh.expected_crypto_amount || 0);
-            const received = Number(result.received || 0);
-
-            let vpcToSend = Number(fresh.vpc_amount || 0);
-            if (expected > 0 && received > 0) {
-              const ratio = Math.min(1, received / expected);
-              vpcToSend = Math.max(1, Math.floor(vpcToSend * ratio));
-            }
-
-            let sig;
-            try {
-              sig = await sendVPC({
-                solanaRecipient: fresh.solana_address,
-                vpcAmount: vpcToSend,
-              });
-            } catch (e) {
-              const msg = String(e?.message || e);
-              console.error(`Order ${fresh.id} sendVPC error: ${msg}`);
-              db.prepare("UPDATE orders SET status='FAILED' WHERE id=?").run(fresh.id);
-              continue;
-            }
-
-            markFulfilled(fresh.id, sig);
-
-            // refresh order row to include fulfill_tx_sig
-            const done = db.prepare(`SELECT * FROM orders WHERE id=?`).get(fresh.id) || fresh;
-
-            console.log(`FULFILLED order=${done.id} sig=${sig}`);
-
-            // 🔔 Telegram notifications
-            try {
-              await notifyTelegram({ order: done, vpcSent: vpcToSend });
-            } catch (e) {
-              console.error("Telegram notify error:", String(e?.message || e));
-            }
-          }
-        }
-      } catch (e) {
-        const msg = String(e?.message || e);
-        console.error("Worker loop error:", msg);
-        if (msg.includes("429")) {
-          await sleep(15000);
-        }
-      }
-      await sleep(config.WORKER_INTERVAL_MS);
-    }
-  })().catch((e) => console.error("Worker crashed:", e));
+export function getDiscountPct(code) {
+  const p = getPromoByCode(code);
+  return p ? p.discountPct : 0;
 }
