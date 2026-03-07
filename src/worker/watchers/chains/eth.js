@@ -55,7 +55,9 @@ export async function checkETH(order) {
 
     if (data.status !== "1" && data.message !== "OK") {
       const msg = String(data.message || "").toLowerCase();
-      if (msg.includes("no transactions")) return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
+      if (msg.includes("no transactions")) {
+        return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
+      }
       throw new Error(`Etherscan txlist error: ${data.message || "unknown"}`);
     }
 
@@ -90,7 +92,6 @@ export async function checkETH(order) {
   }
 
   // ========= USDT ERC20 (tokentx) =========
-  // order.pay_method is expected to be METHOD.USDT_ERC20 (from your existing code)
   if (method === METHOD.USDT_ERC20 || method === "usdt_erc20") {
     const contract = String(config.USDT_ERC20_CONTRACT || "").trim();
     if (!contract) throw new Error("USDT_ERC20_CONTRACT missing in config.");
@@ -103,7 +104,9 @@ export async function checkETH(order) {
 
     if (data.status !== "1" && data.message !== "OK") {
       const msg = String(data.message || "").toLowerCase();
-      if (msg.includes("no transactions")) return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
+      if (msg.includes("no transactions")) {
+        return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
+      }
       throw new Error(`Etherscan tokentx error: ${data.message || "unknown"}`);
     }
 
