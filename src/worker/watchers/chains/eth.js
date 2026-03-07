@@ -16,14 +16,21 @@ async function fetchJson(url) {
   return j;
 }
 
-function getEtherscanBase() {
-  return (process.env.ETHERSCAN_BASE || "https://api.etherscan.io/api").trim();
-}
-
-function getEtherscanKey() {
+function etherscanKey() {
   const k = (process.env.ETHERSCAN_API_KEY || "").trim();
   if (!k) throw new Error("ETHERSCAN_API_KEY missing (required for ETH/USDT ERC20 detection).");
   return k;
+}
+
+function buildEtherscanV2Url(params) {
+  // Etherscan API V2 uses /v2/api and requires chainid
+  const base = "https://api.etherscan.io/v2/api";
+  const usp = new URLSearchParams({
+    chainid: "1",
+    apikey: etherscanKey(),
+    ...params,
+  });
+  return `${base}?${usp.toString()}`;
 }
 
 /**
@@ -39,30 +46,33 @@ export async function checkETH(order) {
     return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
   }
 
-  const apiKey = getEtherscanKey();
-  const base = getEtherscanBase();
-
   const createdAtMs = Number(order.created_at || 0);
   const createdAtSec = Math.floor(createdAtMs / 1000);
+  const depLower = deposit.toLowerCase();
 
   // ========= Native ETH (txlist) =========
   if (method === METHOD.ETH || method === "ethereum") {
-    const url =
-      `${base}?module=account&action=txlist&address=${deposit}` +
-      `&startblock=0&endblock=99999999&sort=desc&apikey=${encodeURIComponent(apiKey)}`;
+    const url = buildEtherscanV2Url({
+      module: "account",
+      action: "txlist",
+      address: deposit,
+      startblock: "0",
+      endblock: "99999999",
+      sort: "desc",
+    });
 
     const data = await fetchJson(url);
 
     if (data.status !== "1" && data.message !== "OK") {
       const msg = String(data.message || "").toLowerCase();
-      if (msg.includes("no transactions")) {
+      const res = String(data.result || "").toLowerCase();
+      if (msg.includes("no transactions") || res.includes("no transactions")) {
         return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
       }
-      throw new Error(`Etherscan txlist error: ${data.message || "unknown"}`);
+      throw new Error(`Etherscan txlist error: ${data.message || data.result || "unknown"}`);
     }
 
     const txs = Array.isArray(data.result) ? data.result : [];
-    const depLower = deposit.toLowerCase();
 
     for (const tx of txs) {
       const to = String(tx.to || "").toLowerCase();
@@ -96,22 +106,28 @@ export async function checkETH(order) {
     const contract = String(config.USDT_ERC20_CONTRACT || "").trim();
     if (!contract) throw new Error("USDT_ERC20_CONTRACT missing in config.");
 
-    const url =
-      `${base}?module=account&action=tokentx&contractaddress=${contract}` +
-      `&address=${deposit}&page=1&offset=100&sort=desc&apikey=${encodeURIComponent(apiKey)}`;
+    const url = buildEtherscanV2Url({
+      module: "account",
+      action: "tokentx",
+      contractaddress: contract,
+      address: deposit,
+      page: "1",
+      offset: "100",
+      sort: "desc",
+    });
 
     const data = await fetchJson(url);
 
     if (data.status !== "1" && data.message !== "OK") {
       const msg = String(data.message || "").toLowerCase();
-      if (msg.includes("no transactions")) {
+      const res = String(data.result || "").toLowerCase();
+      if (msg.includes("no transactions") || res.includes("no transactions")) {
         return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
       }
-      throw new Error(`Etherscan tokentx error: ${data.message || "unknown"}`);
+      throw new Error(`Etherscan tokentx error: ${data.message || data.result || "unknown"}`);
     }
 
     const txs = Array.isArray(data.result) ? data.result : [];
-    const depLower = deposit.toLowerCase();
 
     for (const tx of txs) {
       const to = String(tx.to || "").toLowerCase();
