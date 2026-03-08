@@ -1,3 +1,4 @@
+// src/index.js
 import "dotenv/config";
 import crypto from "crypto";
 import express from "express";
@@ -9,7 +10,7 @@ import { fileURLToPath } from "url";
 
 import { db, migrate } from "./storage/db.js";
 import { config } from "./runtime/config.js";
-import { computeDiscountRate, computeVpcAmount } from "./vpc/pricing.js";
+import { computeVpcAmount } from "./vpc/pricing.js";
 import { isValidSolanaAddress } from "./vpc/solanaValidate.js";
 import { reserveDepositAddress, releaseDepositAddress, getOrReserveDepositAddress } from "./wallets/addressPool.js";
 
@@ -17,6 +18,7 @@ import { checkPayment } from "./worker/watchers/checkPayment.js";
 import { priceForMethodUSD, METHOD } from "./vpc/prices.js";
 import { startWorker } from "./worker/worker.js";
 import { getUsdPrice } from "./services/priceFeed.js";
+import { getPromoInfo } from "./services/promoRegistry.js";
 
 migrate();
 
@@ -37,7 +39,7 @@ app.use((req, res, next) => {
     res.setHeader("Vary", "Origin");
   }
 
-  res.setHeader("Access-Control-Allow-Methods","GET,POST,PATCH,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Admin-Token");
   res.setHeader("Access-Control-Max-Age", "86400");
 
@@ -65,8 +67,6 @@ app.use("/", express.static(path.join(__dirname, "..", "public")));
 
 /** Health */
 app.get("/health", (req, res) => res.json({ ok: true }));
-
-
 
 /** Debug version (Render) */
 app.get("/api/debug/version", (req, res) => {
@@ -110,17 +110,13 @@ app.get("/api/debug/db", (req, res) => {
     const hasDepositAddresses = tables.includes("deposit_addresses");
     const hasOrders = tables.includes("orders");
 
-    const depositCount = hasDepositAddresses
-      ? db.prepare("SELECT COUNT(*) AS c FROM deposit_addresses").get().c
-      : null;
+    const depositCount = hasDepositAddresses ? db.prepare("SELECT COUNT(*) AS c FROM deposit_addresses").get().c : null;
 
     const reservedCount = hasDepositAddresses
       ? db.prepare("SELECT COUNT(*) AS c FROM deposit_addresses WHERE status <> 'FREE'").get().c
       : null;
 
-    const ordersCount = hasOrders
-      ? db.prepare("SELECT COUNT(*) AS c FROM orders").get().c
-      : null;
+    const ordersCount = hasOrders ? db.prepare("SELECT COUNT(*) AS c FROM orders").get().c : null;
 
     return res.json({
       ok: true,
@@ -153,18 +149,14 @@ function requireAdmin(req, res) {
   return true;
 }
 
-/** ===== Method normalization (IMPORTANT) =====
- * We accept both:
- * - bitcoin / ethereum / solana / usdt_trc20 / usdt_erc20 / usdt_sol
- * - BTC / ETH / SOL / USDT_TRC20 / USDT_ERC20 / USDT_SOL
- */
+/** ===== Method normalization (IMPORTANT) ===== */
 function normalizeMethod(input) {
   const v = String(input || "").trim();
   if (!v) return "";
 
   const lower = v.toLowerCase();
   if (lower === "card") return "card";
-// Already correct values:
+
   if (
     lower === METHOD.BTC ||
     lower === METHOD.ETH ||
@@ -176,7 +168,6 @@ function normalizeMethod(input) {
     return lower;
   }
 
-  // Aliases:
   const map = {
     btc: METHOD.BTC,
     bitcoin: METHOD.BTC,
@@ -199,10 +190,9 @@ function normalizeMethod(input) {
     "usdt(sol)": METHOD.USDT_SOL,
   };
 
-  // Also support uppercase enums like "USDT_TRC20"
   const upper = v.toUpperCase();
   const mapUpper = {
-BTC: METHOD.BTC,
+    BTC: METHOD.BTC,
     ETH: METHOD.ETH,
     SOL: METHOD.SOL,
     USDT_TRC20: METHOD.USDT_TRC20,
@@ -234,7 +224,6 @@ const MethodSchema = z
 
 /** ===== Admin endpoints ===== */
 
-/** Stats: shows deposit addresses grouped by method/status */
 app.get("/api/admin/stats", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -256,12 +245,6 @@ app.get("/api/admin/stats", (req, res) => {
   }
 });
 
-/**
- * ✅ SEED addresses into deposit_addresses
- * Body:
- * { "method": "bitcoin", "addresses": ["bc1...", "..."] }
- * (also accepts "BTC", "ETH", etc)
- */
 const SeedSchema = z.object({
   method: MethodSchema,
   addresses: z.array(z.string().min(4)).min(1),
@@ -314,7 +297,6 @@ app.post("/api/admin/seed", (req, res) => {
   }
 });
 
-/** Release expired reservations */
 app.post("/api/admin/release-expired", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -322,7 +304,6 @@ app.post("/api/admin/release-expired", (req, res) => {
   return res.json({ ok: true, released });
 });
 
-/** Force-expire an order (admin) */
 app.post("/api/admin/expire-order/:id", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -343,7 +324,7 @@ app.post("/api/admin/expire-order/:id", (req, res) => {
   const expired = expireOrders(db);
   return res.json({ ok: true, expired });
 });
-/** Reset pool + expire pending orders for a method (admin) */
+
 app.post("/api/admin/reset-method/:method", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -353,26 +334,36 @@ app.post("/api/admin/reset-method/:method", (req, res) => {
 
   const now = Date.now();
 
-  const freed = db.prepare(`
+  const freed = db
+    .prepare(
+      `
     UPDATE deposit_addresses
     SET status='FREE', reserved_by=NULL, reserved_until=NULL
     WHERE method = ?
-  `).run(method).changes;
+  `
+    )
+    .run(method).changes;
 
-  const expiredOrders = db.prepare(`
+  const expiredOrders = db
+    .prepare(
+      `
     UPDATE orders
     SET status='EXPIRED', expires_at=?
     WHERE status='PENDING' AND pay_method=?
-  `).run(now - 1, method).changes;
+  `
+    )
+    .run(now - 1, method).changes;
 
   return res.json({ ok: true, method, freed, expiredOrders });
 });
-/** Lookup order by deposit address (admin) */
+
 app.get("/api/admin/order-by-deposit/:address", (req, res) => {
   if (!requireAdmin(req, res)) return;
 
   const address = String(req.params.address || "").trim();
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT id, status, usd, pay_method, solana_address, promo_code, discount_rate, vpc_amount,
            expected_crypto_amount, crypto_currency_label, deposit_address, created_at, expires_at,
            payment_seen, payment_confirmed, payment_txid, fulfill_tx_sig
@@ -380,12 +371,14 @@ app.get("/api/admin/order-by-deposit/:address", (req, res) => {
     WHERE deposit_address = ?
     ORDER BY created_at DESC
     LIMIT 1
-  `).get(address);
+  `
+    )
+    .get(address);
 
   if (!row) return res.status(404).json({ ok: false, error: "Not found" });
   return res.json({ ok: true, order: row });
 });
-/** Check payment for an order once (admin) */
+
 app.get("/api/admin/check-payment/:id", async (req, res) => {
   if (!requireAdmin(req, res)) return;
 
@@ -400,22 +393,24 @@ app.get("/api/admin/check-payment/:id", async (req, res) => {
     return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
+
 /** ===== Business endpoints ===== */
 
 const OrderCreateSchema = z.object({
   usd: z.number().finite().min(1),
   payoutAddress: z.string().min(16).max(120),
-  payMethod: MethodSchema, // ✅ accepts BTC or bitcoin etc
+  payMethod: MethodSchema,
   promoCode: z.string().optional().default(""),
 });
 
-function expiresInMs(method) { return method === "card" ? 60 * 60 * 1000 : 30 * 60 * 1000; }
+function expiresInMs(method) {
+  return method === "card" ? 60 * 60 * 1000 : 30 * 60 * 1000;
+}
 
-function buildMoonPayUrl({ usd, walletAddress, orderId }) {
-  // No MoonPay keys: we only give a generic link + user will manually paste address + amount.
-  // Keep walletAddress/orderId in the API response for instructions.
+function buildMoonPayUrl() {
   return "https://www.moonpay.com/buy";
 }
+
 async function coingeckoPriceUSD(coingeckoId) {
   return await getUsdPrice(coingeckoId);
 }
@@ -423,6 +418,24 @@ async function coingeckoPriceUSD(coingeckoId) {
 function roundTo(n, decimals) {
   const m = 10 ** decimals;
   return Math.round(n * m) / m;
+}
+
+// ✅ Promo validation from Render registry
+function promoDiscountRateOrThrow(promoCode) {
+  const raw = String(promoCode || "").trim();
+  if (!raw) return { promoCode: "", discountRate: 0 };
+
+  const promo = getPromoInfo(raw);
+  if (!promo) {
+    const err = new Error("Invalid promo code");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const pct = Number(promo.discountPct || 0);
+  const safePct = Number.isFinite(pct) ? Math.max(0, Math.min(90, pct)) : 0;
+
+  return { promoCode: promo.code, discountRate: safePct / 100 };
 }
 
 /** Create order */
@@ -433,16 +446,28 @@ app.post("/api/order", async (req, res) => {
       return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
     }
 
-        const { usd, payoutAddress, payMethod, promoCode } = parsed.data;
+    const { usd, payoutAddress, payMethod, promoCode } = parsed.data;
 
     const clientMethod = payMethod;
-    const internalMethod = (clientMethod === "card") ? METHOD.SOL : clientMethod;
+    const internalMethod = clientMethod === "card" ? METHOD.SOL : clientMethod;
 
     if (clientMethod === "card" && usd < 1) {
-      return res.status(400).json({ error: "Minimum amount for card is \$1" });
+      return res.status(400).json({ error: "Minimum amount for card is $1" });
     }
-const promo = (promoCode || "").trim().toLowerCase();
-    const discountRate = computeDiscountRate(usd, promo);
+
+    // ✅ Promo: reject invalid codes (professional)
+    let promo = "";
+    let discountRate = 0;
+    try {
+      const r = promoDiscountRateOrThrow(promoCode);
+      promo = r.promoCode;
+      discountRate = r.discountRate;
+    } catch (e) {
+      if (Number(e?.statusCode || 0) === 400) {
+        return res.status(400).json({ error: "Invalid promo code" });
+      }
+      throw e;
+    }
 
     const effectiveVpcPrice = config.VPC_PRICE_USD * (1 - discountRate);
     const vpcAmount = computeVpcAmount(usd, effectiveVpcPrice);
@@ -487,7 +512,9 @@ const promo = (promoCode || "").trim().toLowerCase();
       expiresAt,
     });
 
-    const moonpayUrl = (clientMethod === "card") ? buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId }) : null;
+    const moonpayUrl =
+      clientMethod === "card" ? buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId }) : null;
+
     return res.json({
       orderId,
       status: "PENDING",
@@ -507,7 +534,7 @@ const promo = (promoCode || "").trim().toLowerCase();
   }
 });
 
-/** Get order */
+/** Patch order */
 app.patch("/api/order/:id", async (req, res) => {
   try {
     const orderId = String(req.params.id || "");
@@ -526,21 +553,27 @@ app.patch("/api/order/:id", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Invalid payMethod" });
     }
 
-    const row = db.prepare(
-      `SELECT id, status, usd, pay_method, client_method, solana_address, promo_code, deposit_address
-       FROM orders WHERE id = ?`
-    ).get(orderId);
+    const row = db
+      .prepare(
+        `SELECT id, status, usd, pay_method, client_method, solana_address, promo_code, deposit_address
+         FROM orders WHERE id = ?`
+      )
+      .get(orderId);
 
     if (!row) return res.status(404).json({ ok: false, error: "Order not found" });
     if (row.status !== "PENDING") return res.status(409).json({ ok: false, error: "Order not editable" });
 
-    const nextUsd = (usd !== undefined) ? usd : row.usd;
-    const nextPayout = (payoutAddress !== undefined) ? String(payoutAddress).trim() : String(row.solana_address || "").trim();
-    const nextPromo = (promoCode !== undefined) ? String(promoCode).trim().toLowerCase() : String(row.promo_code || "").trim().toLowerCase();
-        const nextClientMethod = (payMethod !== undefined) ? String(payMethod).trim() : String(row.client_method || row.pay_method).trim();
-    const nextMethod = (nextClientMethod === "card") ? METHOD.SOL : nextClientMethod;
+    const nextUsd = usd !== undefined ? usd : row.usd;
+    const nextPayout =
+      payoutAddress !== undefined ? String(payoutAddress).trim() : String(row.solana_address || "").trim();
 
-    // payout wallet must be Solana address (VPC receive)
+    const nextPromoRaw =
+      promoCode !== undefined ? String(promoCode).trim() : String(row.promo_code || "").trim();
+
+    const nextClientMethod =
+      payMethod !== undefined ? String(payMethod).trim() : String(row.client_method || row.pay_method).trim();
+    const nextMethod = nextClientMethod === "card" ? METHOD.SOL : nextClientMethod;
+
     if (!isValidSolanaAddress(nextPayout)) {
       return res.status(400).json({ ok: false, error: "Invalid payoutAddress (Solana)" });
     }
@@ -548,8 +581,20 @@ app.patch("/api/order/:id", async (req, res) => {
     const now = Date.now();
     const expiresAt = now + expiresInMs(nextClientMethod);
 
-    // recompute prices + amounts
-    const discountRate = computeDiscountRate(nextUsd, nextPromo);
+    // ✅ Promo validation
+    let nextPromo = "";
+    let discountRate = 0;
+    try {
+      const r = promoDiscountRateOrThrow(nextPromoRaw);
+      nextPromo = r.promoCode;
+      discountRate = r.discountRate;
+    } catch (e) {
+      if (Number(e?.statusCode || 0) === 400) {
+        return res.status(400).json({ ok: false, error: "Invalid promo code" });
+      }
+      throw e;
+    }
+
     const effectiveVpcPrice = config.VPC_PRICE_USD * (1 - discountRate);
     const vpcAmount = computeVpcAmount(nextUsd, effectiveVpcPrice);
 
@@ -561,9 +606,7 @@ app.patch("/api/order/:id", async (req, res) => {
 
     let depositAddress = row.deposit_address;
 
-    // if method changed => free old address and reserve a new one
     if (String(row.pay_method) !== nextMethod) {
-      // Keep the old reservation for 30min (do NOT free), so switching back reuses the same address.
       try {
         db.prepare(
           `UPDATE deposit_addresses
@@ -578,7 +621,6 @@ app.patch("/api/order/:id", async (req, res) => {
       }
       depositAddress = newAddr;
     } else {
-      // same method => just extend reservation timer
       db.prepare(
         `UPDATE deposit_addresses
          SET reserved_until = ?
@@ -589,8 +631,8 @@ app.patch("/api/order/:id", async (req, res) => {
     db.prepare(
       `UPDATE orders
        SET usd = ?,
-            pay_method = ?,
-            client_method = ?,
+           pay_method = ?,
+           client_method = ?,
            solana_address = ?,
            promo_code = ?,
            discount_rate = ?,
@@ -622,6 +664,7 @@ app.patch("/api/order/:id", async (req, res) => {
     return res.status(500).json({ ok: false, error: "Server error" });
   }
 });
+
 app.get("/api/order/:id", (req, res) => {
   const id = String(req.params.id || "");
   const row = db.prepare("SELECT * FROM orders WHERE id = ?").get(id);
@@ -647,7 +690,6 @@ app.get("/api/order/:id", (req, res) => {
   });
 });
 
-/** Optional ping */
 app.post("/api/order/:id/paid", (req, res) => {
   const id = String(req.params.id || "");
   const row = db.prepare("SELECT id FROM orders WHERE id = ?").get(id);
@@ -660,25 +702,26 @@ app.post("/api/order/:id/paid", (req, res) => {
 function expireOrders(db) {
   const now = Date.now();
 
-  // find expired pending orders
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT id, pay_method, deposit_address
     FROM orders
     WHERE status = 'PENDING'
       AND expires_at IS NOT NULL
       AND expires_at < ?
-  `).all(now);
+  `
+    )
+    .all(now);
 
   if (!rows || rows.length === 0) return 0;
 
-  // mark orders expired
   db.prepare(`
     UPDATE orders
     SET status = 'EXPIRED'
     WHERE status = 'PENDING' AND expires_at < ?
   `).run(now);
 
-  // free their reserved addresses (only if still reserved by that order)
   const freeStmt = db.prepare(`
     UPDATE deposit_addresses
     SET status='FREE', reserved_by=NULL, reserved_until=NULL
@@ -694,9 +737,17 @@ function expireOrders(db) {
 
 app.listen(config.PORT, () => {
   startWorker();
-  try { releaseDepositAddress(db); } catch (e) { console.error("❌ release-expired loop:", e); }
+  try {
+    releaseDepositAddress(db);
+  } catch (e) {
+    console.error("❌ release-expired loop:", e);
+  }
   setInterval(() => {
-    try { releaseDepositAddress(db); } catch (e) { console.error("❌ release-expired loop:", e); }
+    try {
+      releaseDepositAddress(db);
+    } catch (e) {
+      console.error("❌ release-expired loop:", e);
+    }
   }, 60 * 1000);
   console.log(`API listening on :${config.PORT}`);
 });
