@@ -12,6 +12,10 @@
  * - syncDepositPoolStrict(db, method, addresses) will:
  *   1) insert missing addresses as FREE
  *   2) delete addresses not in the provided list (for that method)
+ *
+ * QUEUE MODE (round-robin):
+ * - picking FREE address uses ORDER BY COALESCE(last_used_at,0) ASC, id ASC
+ * - freeing/expiring pushes address to the back by setting last_used_at = now
  */
 
 function normalizeAddressForMethod(method, address) {
@@ -59,7 +63,6 @@ export function syncDepositPoolStrict(db, method, addresses) {
     for (const addr of list) ins.run(method, addr);
 
     // 2) Delete any address not in pools.json (for this method)
-    // Build placeholders (?, ?, ?, ...)
     const placeholders = list.map(() => "?").join(",");
     const del = db.prepare(`
       DELETE FROM deposit_addresses
@@ -86,14 +89,7 @@ export function syncDepositPoolStrict(db, method, addresses) {
  */
 export function syncAllPoolsStrict(db, pools) {
   const p = pools || {};
-  const methods = [
-    "bitcoin",
-    "ethereum",
-    "solana",
-    "usdt_trc20",
-    "usdt_erc20",
-    "usdt_sol",
-  ];
+  const methods = ["bitcoin", "ethereum", "solana", "usdt_trc20", "usdt_erc20", "usdt_sol"];
 
   for (const method of methods) {
     if (p[method]) syncDepositPoolStrict(db, method, p[method]);
@@ -103,12 +99,13 @@ export function syncAllPoolsStrict(db, pools) {
 export function reserveDepositAddress(db, method, orderId, expiresAt) {
   const now = Date.now();
 
+  // ✅ QUEUE: pick the least recently used FREE address (oldest last_used_at)
   const row = db.prepare(`
     SELECT address
     FROM deposit_addresses
     WHERE method = ?
       AND status = 'FREE'
-    ORDER BY id ASC
+    ORDER BY COALESCE(last_used_at, 0) ASC, id ASC
     LIMIT 1
   `).get(method);
 
@@ -173,27 +170,32 @@ export function markAddressInFlight(db, method, address, orderId, expiresAt) {
 }
 
 export function freeDepositAddress(db, method, address) {
+  const now = Date.now();
+  // ✅ QUEUE: pushing freed address to back
   db.prepare(`
     UPDATE deposit_addresses
     SET status = 'FREE',
         reserved_by = NULL,
-        reserved_until = NULL
+        reserved_until = NULL,
+        last_used_at = ?
     WHERE method = ?
       AND address = ?
-  `).run(method, address);
+  `).run(now, method, address);
 }
 
 // Release expired RESERVED only (never INFLIGHT)
 export function releaseDepositAddress(db) {
   const now = Date.now();
+  // ✅ QUEUE: pushing expired addresses to back
   const r = db.prepare(`
     UPDATE deposit_addresses
     SET status = 'FREE',
         reserved_by = NULL,
-        reserved_until = NULL
+        reserved_until = NULL,
+        last_used_at = ?
     WHERE status = 'RESERVED'
       AND reserved_until IS NOT NULL
       AND reserved_until < ?
-  `).run(now);
+  `).run(now, now);
   return r.changes;
 }
