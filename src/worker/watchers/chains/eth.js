@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 // src/worker/watchers/chains/eth.js
-=======
-﻿// src/worker/watchers/chains/eth.js
->>>>>>> a6d20c6 (update)
 import { config } from "../../../runtime/config.js";
 import { METHOD } from "../../../vpc/prices.js";
 
@@ -12,10 +8,17 @@ function withinTolerance(received, expected) {
 }
 
 async function fetchJson(url) {
-  const r = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+  const r = await fetch(url, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
   const t = await r.text();
   let j = {};
-  try { j = t ? JSON.parse(t) : {}; } catch { j = { raw: t }; }
+  try {
+    j = t ? JSON.parse(t) : {};
+  } catch {
+    j = { raw: t };
+  }
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return j;
 }
@@ -27,11 +30,7 @@ function etherscanKey() {
 }
 
 function buildEtherscanV2Url(params) {
-<<<<<<< HEAD
-  // Etherscan API V2 uses /v2/api and requires chainid
-=======
   // Etherscan API V2 endpoint requires chainid
->>>>>>> a6d20c6 (update)
   const base = "https://api.etherscan.io/v2/api";
   const usp = new URLSearchParams({
     chainid: "1",
