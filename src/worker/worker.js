@@ -37,10 +37,12 @@ function updateSeen(id, txid) {
 }
 
 function updateConfirmed(id, txid) {
+  // ✅ Guard: never mark PAID without a txid
+  if (!txid) return;
   db.prepare(
     `UPDATE orders SET payment_seen=1, payment_confirmed=1, payment_txid=COALESCE(payment_txid, ?), status='PAID'
      WHERE id=?`
-  ).run(txid || null, id);
+  ).run(txid, id);
 }
 
 function markFulfilled(id, sig) {
@@ -113,14 +115,30 @@ export function startWorker() {
 
           await sleep(250);
 
-          if (result.seen && !current.payment_seen) updateSeen(current.id, result.txid || null);
+          const txid = String(result?.txid || "").trim() || null;
 
-          if (result.confirmed && current.status === "PENDING") {
-            updateConfirmed(current.id, result.txid || null);
+          if (result?.seen && !current.payment_seen) updateSeen(current.id, txid);
+
+          // ✅ HARD GUARD: confirmed must have txid
+          if (result?.confirmed && !txid) {
+            console.error(`Order ${current.id} watcher returned confirmed but missing txid; skipping.`);
+            continue;
+          }
+
+          if (result?.confirmed && current.status === "PENDING") {
+            // ✅ will only mark PAID if txid exists
+            updateConfirmed(current.id, txid);
 
             const fresh = db.prepare(`SELECT * FROM orders WHERE id=?`).get(current.id) || current;
+
+            // ✅ HARD GUARD: never send VPC unless DB has payment_txid + payment_confirmed
+            if (!fresh.payment_confirmed || !fresh.payment_txid) {
+              console.error(`Order ${fresh.id} not eligible to fulfill (missing confirmed txid).`);
+              continue;
+            }
+
             const expected = Number(fresh.expected_crypto_amount || 0);
-            const received = Number(result.received || 0);
+            const received = Number(result?.received || 0);
 
             let vpcToSend = Number(fresh.vpc_amount || 0);
             if (expected > 0 && received > 0) {
@@ -144,7 +162,6 @@ export function startWorker() {
             markFulfilled(fresh.id, sig);
 
             const done = db.prepare(`SELECT * FROM orders WHERE id=?`).get(fresh.id) || fresh;
-
             console.log(`FULFILLED order=${done.id} sig=${sig}`);
 
             try {
