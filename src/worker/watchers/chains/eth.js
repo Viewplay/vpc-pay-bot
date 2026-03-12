@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 // src/worker/watchers/chains/eth.js
+=======
+﻿// src/worker/watchers/chains/eth.js
+>>>>>>> a6d20c6 (update)
 import { config } from "../../../runtime/config.js";
 import { METHOD } from "../../../vpc/prices.js";
 
@@ -23,7 +27,11 @@ function etherscanKey() {
 }
 
 function buildEtherscanV2Url(params) {
+<<<<<<< HEAD
   // Etherscan API V2 uses /v2/api and requires chainid
+=======
+  // Etherscan API V2 endpoint requires chainid
+>>>>>>> a6d20c6 (update)
   const base = "https://api.etherscan.io/v2/api";
   const usp = new URLSearchParams({
     chainid: "1",
