@@ -6,13 +6,19 @@ import helmet from "helmet";
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 
 import { db, migrate } from "./storage/db.js";
 import { config } from "./runtime/config.js";
 import { computeVpcAmount } from "./vpc/pricing.js";
 import { isValidSolanaAddress } from "./vpc/solanaValidate.js";
-import { reserveDepositAddress, releaseDepositAddress, getOrReserveDepositAddress } from "./wallets/addressPool.js";
+import {
+  reserveDepositAddress,
+  releaseDepositAddress,
+  getOrReserveDepositAddress,
+  syncAllPoolsStrict,
+} from "./wallets/addressPool.js";
 
 import { checkPayment } from "./worker/watchers/checkPayment.js";
 import { priceForMethodUSD, METHOD } from "./vpc/prices.js";
@@ -62,6 +68,17 @@ app.use((err, req, res, next) => {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ===== STRICT POOLS SYNC (keeps ONLY config/pools.json addresses) =====
+try {
+  const poolsPath = path.join(__dirname, "..", "config", "pools.json");
+  const pools = JSON.parse(fs.readFileSync(poolsPath, "utf-8"));
+  syncAllPoolsStrict(db, pools);
+  console.log("✅ Pools synced (STRICT) from config/pools.json");
+} catch (e) {
+  console.error("❌ Failed to sync pools from config/pools.json:", e?.message || e);
+  process.exit(1);
+}
+
 /** Serve optional static frontend (for quick testing) */
 app.use("/", express.static(path.join(__dirname, "..", "public")));
 
@@ -77,6 +94,7 @@ app.get("/api/debug/version", (req, res) => {
     node: process.version,
   });
 });
+
 /** Debug echo endpoint (helps verify what server receives) */
 app.post("/api/debug/echo", (req, res) => {
   return res.json({ ok: true, headers: req.headers, body: req.body });
@@ -512,8 +530,7 @@ app.post("/api/order", async (req, res) => {
       expiresAt,
     });
 
-    const moonpayUrl =
-      clientMethod === "card" ? buildMoonPayUrl({ usd, walletAddress: depositAddress, orderId }) : null;
+    const moonpayUrl = clientMethod === "card" ? buildMoonPayUrl() : null;
 
     return res.json({
       orderId,
