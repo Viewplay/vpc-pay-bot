@@ -1,3 +1,4 @@
+// src/worker/watchers/chains/tron.js
 import { config } from "../../../runtime/config.js";
 
 function withinTolerance(received, expected) {
@@ -27,6 +28,8 @@ export async function checkTRON(order) {
     return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
   }
 
+  const createdAtMs = Number(order.created_at || 0);
+
   const contract = String(config.USDT_TRC20_CONTRACT || "").trim();
   if (!contract) {
     return { seen: false, confirmed: false, txid: null, received: 0, conf: 0 };
@@ -42,7 +45,7 @@ export async function checkTRON(order) {
 
   let data;
   try {
-    const r = await fetch(url, { headers });
+    const r = await fetch(url, { headers, cache: "no-store" });
     if (!r.ok) throw new Error(`TRON HTTP ${r.status}`);
     data = await r.json();
   } catch {
@@ -50,12 +53,16 @@ export async function checkTRON(order) {
   }
 
   const txs = Array.isArray(data?.data) ? data.data : [];
+
   for (const tx of txs) {
+    // ✅ Ignore old transfers (before this order was created)
+    const ts = Number(tx?.block_timestamp || 0); // ms
+    if (createdAtMs > 0 && ts > 0 && ts + 5000 < createdAtMs) continue;
+
     const tokenInfo = tx?.token_info || {};
     const tokenAddr = String(tokenInfo?.address || "").trim();
     if (!tokenAddr) continue;
 
-    // TronGrid can return hex or base58; accept both by comparing lowercase includes
     const want = contract.toLowerCase();
     const got = tokenAddr.toLowerCase();
     if (got !== want) continue;
@@ -78,7 +85,7 @@ export async function checkTRON(order) {
       confirmed: true,
       txid: tx?.transaction_id || tx?.transactionId || null,
       received,
-      conf: 1
+      conf: 1,
     };
   }
 
